@@ -1,0 +1,14 @@
+# Defaults for every `colcon build` in this workspace.
+#
+# These used to be supplied by `colcon mixin add default <a GitHub URL>` at
+# bootstrap time, which made a reproducible build depend on a network fetch of
+# a file nobody here reviewed. The two flags that mixin actually contributed
+# are written out below instead.
+#
+# --symlink-install is NOT here on purpose: it belongs on the command line in
+# tari.bash so that it is visible in the log of what was built, and so that a
+# one-off build without it cannot silently produce a half-symlinked workspace.
+build:
+  cmake-args:
+    - -DCMAKE_BUILD_TYPE=Release
+    - -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

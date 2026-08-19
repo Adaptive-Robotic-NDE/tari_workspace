@@ -1,0 +1,35 @@
+# site.repos -- PRIVATE. Import last.
+#
+#     vcs import < sim.repos && vcs import < acq.repos \
+#         && vcs import < hw.repos && vcs import < site.repos
+#
+# This is the only manifest that references repositories outside the shareable
+# set, and it is the line the whole layering exists to draw. If a collaborator
+# ever needs something from here, that is a signal the thing is not really site
+# data and belongs in tari_ros instead.
+#
+# The test that this line holds is not a code review, it is a build: clone and
+# build sim.repos from an account with NO access to org-private repositories.
+# If that works, the deliverable is clean. `tari.bash --verify sim` does the
+# build half; the credential half has to be a different account.
+
+repositories:
+
+  ros_ws/src/tari_site:
+    type: git
+    # `_private`, not `_staging`: this is not on a path to public release. The
+    # checkout path drops the suffix, as everywhere else.
+    url: git@github.com:Adaptive-Robotic-NDE/tari_site_private.git
+    version: main
+
+  ros_ws/src/csf_loader:
+    type: git
+    # Reads HandyScan 3D .csf files, extracts tracking targets and correlates
+    # them with the same targets detected in the Azure Kinect IR image. Site
+    # data because the format is proprietary and the targets are ours.
+    #
+    # This repository was in NO manifest at all until now -- neither the old
+    # workspace.repos nor dependencies.repos listed it -- so no bootstrap has
+    # ever reproduced it.
+    url: git@github.com:Adaptive-Robotic-NDE/csf_loader_private.git
+    version: iron

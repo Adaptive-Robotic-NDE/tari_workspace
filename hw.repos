@@ -1,0 +1,69 @@
+# hw.repos -- instrument drivers. Import AFTER sim.repos and acq.repos.
+#
+#     vcs import < sim.repos && vcs import < acq.repos && vcs import < hw.repos
+#
+# Nothing here is secret and nothing here is useful without the devices. It is
+# a separate layer rather than part of acq because it pulls in two vendor SDKs
+# that apt cannot supply on its own, and because a collaborator running a
+# simulation has no use for any of it.
+#
+# TWO DEPENDENCIES ARE INVISIBLE TO ROSDEP and must be installed by hand. Both
+# are called out by `tari.bash --layer hw`, which stops rather than building a
+# driver without its SDK:
+#
+#   * libk4a (Azure Kinect Sensor SDK) from packages.microsoft.com. It is a
+#     hard dependency of azure_kinect_ros_driver and requires accepting a
+#     licence, so it cannot be automated.
+#   * NI-DAQmx from National Instruments, for dgpython-nidaqmx. Proprietary,
+#     x86-64 only.
+
+repositories:
+
+  # ---- ROS driver packages ----------------------------------------------
+  ros_ws/src/azure_kinect_ros_driver:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/azure_kinect_ros_driver_staging.git
+    version: main
+
+  ros_ws/src/keyence_experimental:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/keyence_experimental_staging.git
+    version: main
+
+  ros_ws/src/libsocket:
+    type: git
+    url: https://github.com/dermesser/libsocket.git
+    version: 6214af728874b98055eefed293274540d98f6568
+
+  # ---- dataguzzler-python instrument modules ----------------------------
+  # Installed by dgpy_install.sh, not by colcon.
+
+  dgpython-azurekinect:
+    type: git
+    url: git@github.com:isuthermography/dgpython-azurekinect_staging.git
+    version: master
+
+  dgpython-nidaqmx:
+    type: git
+    # PERSONAL REMOTE. Should move to the org.
+    url: git@github.com:lesthaeghet/dgpython-nidaqmx.git
+    version: master
+
+  dgpython-uniwest:
+    type: git
+    # `_private` rather than `_staging`: this one is not on a path to public
+    # release. Until 2026-08-19 its origin was "D:/Software Porter/
+    # dgpython-uniwest", a path on a Windows machine, so the only copy of this
+    # module was one working tree.
+    #
+    # Dashes in the repository name and underscores in the package name is the
+    # dataguzzler convention, and is why this is not renamed the way the ROS
+    # packages were.
+    url: git@github.com:Adaptive-Robotic-NDE/dgpython-uniwest_private.git
+    version: master
+
+  dgpython-opencv-camera:
+    type: git
+    # PERSONAL REMOTE. Should move to the org.
+    url: git@github.com:lesthaeghet/dgpython-opencv-camera.git
+    version: master

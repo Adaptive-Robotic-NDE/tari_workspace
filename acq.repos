@@ -1,0 +1,54 @@
+# acq.repos -- the acquisition stack. Import AFTER sim.repos.
+#
+#     vcs import < sim.repos
+#     vcs import < acq.repos
+#
+# Adds spatialnde2 (the recording database, math functions, geometry and the
+# Qt/OpenSceneGraph viewer), dataguzzler-python (the acquisition platform and
+# the dgpy> REPL), the two instrument-independent dgpython modules, and the
+# .dgp/.dpi scan configurations that drive them.
+#
+# NOTHING HERE IS BUILT BY COLCON. These are ordinary Python distributions and
+# they live at the workspace root, outside ros_ws, which is what keeps the two
+# build systems from fighting over them. `dgpy_install.sh` builds and installs
+# them; `dgpy_install.sh --check` says whether the installed copy matches the
+# source you have checked out, which matters because the installs are not
+# editable.
+#
+# The one exception in the whole workspace is dgpython-ros2motion, which is a
+# set of ROS packages, lives in ros_ws/src, is built by colcon, and is imported
+# by sim.repos. Do not pip install any part of it.
+#
+# spatialnde2 and dataguzzler-python belong to isuthermography -- a
+# collaboration with Iowa State rather than a repository this org controls.
+# They are shareable, and they are also under active development here; expect
+# to be changing them.
+
+repositories:
+
+  spatialnde2:
+    type: git
+    url: git@github.com:isuthermography/spatialnde2_staging
+    version: develop
+
+  dataguzzler-python:
+    type: git
+    url: git@github.com:isuthermography/dataguzzler-python_staging
+    version: master
+
+  dgpython-param-manager:
+    type: git
+    # PERSONAL REMOTE. Should move to the org before this manifest is handed
+    # to anyone outside it.
+    url: git@github.com:lesthaeghet/dgpython-param-manager.git
+    version: master
+
+  dgpython-local:
+    type: git
+    url: git@github.com:isuthermography/dgpython-local.git
+    version: master
+
+  ROS-Scanning:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/ROS-Scanning_staging
+    version: master
