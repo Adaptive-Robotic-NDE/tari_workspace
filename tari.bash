@@ -347,12 +347,24 @@ source /opt/ros/$ROSDISTRO/setup.bash
 # stale copies behind whenever a model was renamed.
 export GAZEBO_MODEL_PATH="$models\${GAZEBO_MODEL_PATH:+:\$GAZEBO_MODEL_PATH}"
 
-# Cell manifests: tari_bringup searches every PACKAGE named here first and its
-# own config/cells last, so a site manifest overrides a shipped one without
-# editing the shared package. A package name rather than a path, so this
-# survives the workspace moving.
+EOF
+
+    # Cell manifests: tari_bringup searches every PACKAGE named in
+    # TARI_CELL_PATH first and its own config/cells last, so a site manifest
+    # overrides a shipped one without editing the shared package. A package
+    # name rather than a path, so it survives the workspace moving.
+    #
+    # Only written for the site layer. Naming tari_cell_configs in a sim-layer
+    # setup would point at a package that layer deliberately does not have --
+    # harmless, because search_paths() ignores entries it cannot resolve, but
+    # it reads like the setup is broken when it is doing exactly the right
+    # thing.
+    if layer_at_least site; then
+        cat >> "$out" <<EOF
+
 export TARI_CELL_PATH="tari_cell_configs\${TARI_CELL_PATH:+:\$TARI_CELL_PATH}"
 EOF
+    fi
 
     if [[ -d "$WS/src/sofa" ]]; then
         echo "export SOFA_INSTALL_DIR=\"$WS/src/sofa\"" >> "$out"
