@@ -162,6 +162,20 @@ layer_chain "$LAYER" >/dev/null
 phase_prereqs() {
     say "Prerequisites"
 
+    # The container layer is the one layer that is meant to work anywhere: it
+    # supplies the Ubuntu the others need. It wants git and docker, nothing
+    # from apt, so do not send a non-Ubuntu host down the apt path for it.
+    if [[ "$LAYER" == "container" ]]; then
+        local missing=()
+        command -v git    >/dev/null || missing+=(git)
+        command -v docker >/dev/null || missing+=(docker)
+        if [[ ${#missing[@]} -gt 0 ]]; then
+            die "the container layer needs: ${missing[*]}"
+        fi
+        note "container layer: git and docker present, nothing else required"
+        return 0
+    fi
+
     if [[ ! -f /etc/os-release ]] || ! grep -qi ubuntu /etc/os-release; then
         warn "This is not Ubuntu. The package names below are Debian/Ubuntu names"
         warn "and apt will not exist elsewhere. Install the equivalents by hand."
@@ -205,13 +219,40 @@ phase_prereqs() {
     fi
 }
 
+# vcstool is an apt package, and --phase prereqs is apt-only. The container
+# layer exists precisely because the host need not be Ubuntu, so requiring apt
+# to obtain it would be circular. A manifest entry is only "clone this URL at
+# this version", so do that directly when vcs is unavailable.
+import_manifest() {
+    local manifest="$1"
+    if command -v vcs >/dev/null; then
+        run "vcs import --input '$manifest' '$ROOT'"
+        return
+    fi
+    local line path url version
+    while IFS=$'\t' read -r path url version; do
+        if [[ -d "$ROOT/$path/.git" ]]; then
+            note "$path already present"
+            continue
+        fi
+        run "git clone --branch '$version' '$url' '$ROOT/$path'"
+    done < <(python3 - "$manifest" <<'PYEOF'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])) or {}
+for path, spec in (d.get("repositories") or {}).items():
+    print("%s\t%s\t%s" % (path, spec["url"], spec["version"]))
+PYEOF
+)
+}
+
 phase_sources() {
     say "Sources"
-    command -v vcs >/dev/null || fatal_unless_dry "vcstool is missing; run --phase prereqs first"
+    command -v vcs >/dev/null \
+        || note "vcstool not found; cloning from the manifests directly"
     mkdir -p "$WS/src"
     for l in $(layer_chain "$LAYER"); do
         note "importing $l.repos"
-        run "vcs import --input '$ROOT/$l.repos' '$ROOT'"
+        import_manifest "$ROOT/$l.repos"
     done
 
     if [[ $WITH_TEST_DATA -eq 1 ]]; then
