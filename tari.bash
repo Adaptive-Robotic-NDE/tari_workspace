@@ -229,13 +229,23 @@ import_manifest() {
         run "vcs import --input '$manifest' '$ROOT'"
         return
     fi
-    local line path url version
+    # NOT `git clone --branch`: a manifest version may be a branch, a tag OR a
+    # commit, and --branch rejects a commit. Clone, then check out whatever it
+    # is. A failure has to fail the phase -- a half-imported workspace that
+    # reports success is worse than one that stops.
+    local path url version rc=0
     while IFS=$'\t' read -r path url version; do
         if [[ -d "$ROOT/$path/.git" ]]; then
             note "$path already present"
             continue
         fi
-        run "git clone --branch '$version' '$url' '$ROOT/$path'"
+        if ! run "git clone --quiet '$url' '$ROOT/$path'"; then
+            warn "clone failed: $path"; rc=1; continue
+        fi
+        if ! run "git -C '$ROOT/$path' checkout --quiet '$version'"; then
+            warn "no such version '$version' in $path"; rc=1; continue
+        fi
+        note "$path at $version"
     done < <(python3 - "$manifest" <<'PYEOF'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1])) or {}
@@ -243,6 +253,7 @@ for path, spec in (d.get("repositories") or {}).items():
     print("%s\t%s\t%s" % (path, spec["url"], spec["version"]))
 PYEOF
 )
+    return $rc
 }
 
 phase_sources() {
@@ -252,7 +263,8 @@ phase_sources() {
     mkdir -p "$WS/src"
     for l in $(layer_chain "$LAYER"); do
         note "importing $l.repos"
-        import_manifest "$ROOT/$l.repos"
+        import_manifest "$ROOT/$l.repos" \
+            || fatal_unless_dry "$l.repos did not import cleanly (see above)"
     done
 
     if [[ $WITH_TEST_DATA -eq 1 ]]; then
