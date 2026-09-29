@@ -1,0 +1,155 @@
+# workspace.repos -- every repository, in one file.
+#
+#     vcs import < workspace.repos
+#
+# THIS FILE IS AN AGGREGATE AND IS NOT THE SOURCE OF TRUTH. The layered
+# manifests are -- container.repos, sim.repos, acq.repos, hw.repos, site.repos
+# -- and tari.bash imports those, never this one. This exists for the case
+# where you want everything at once and do not care about layering.
+#
+# It had drifted: it named a repository that does not exist, pointed several
+# packages at different remotes than the layers do, and pinned different
+# branches. Regenerate it rather than editing it by hand:
+#
+#     ./tari.bash --check-remotes      # verifies the layers, not this file
+#     python3 - <<'EOF'
+#     import yaml
+#     out = {}
+#     for f in ("container.repos","sim.repos","acq.repos","hw.repos","site.repos"):
+#         out.update((yaml.safe_load(open(f)) or {}).get("repositories") or {})
+#     print(yaml.safe_dump({"repositories": out}, sort_keys=False))
+#     EOF
+#
+# Layer of origin is noted against each entry.
+
+repositories:
+  # from container.repos
+  container:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/tari_container_staging.git
+    version: iron
+  # from sim.repos
+  ros_ws/src/tari_ros:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/tari_ros_staging.git
+    version: iron
+  # from sim.repos
+  ros_ws/src/dgpython-ros2motion:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/dgpython-ros2motion_staging
+    version: iron
+  # from sim.repos
+  ros_ws/src/moveit_task_constructor:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/moveit_task_constructor_staging.git
+    version: tari/iron
+  # from sim.repos
+  ros_ws/src/industrial_reconstruction:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/industrial_reconstruction_staging.git
+    version: tari/iron
+  # from sim.repos
+  ros_ws/src/yolo_ros:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/yolo_ros_staging.git
+    version: tari/iron
+  # from sim.repos
+  ros_ws/src/noether:
+    type: git
+    url: https://github.com/ros-industrial/noether.git
+    version: e64b330e13cdc181f983d27094427df9ad98188c
+  # from sim.repos
+  ros_ws/src/boost_plugin_loader:
+    type: git
+    url: https://github.com/tesseract-robotics/boost_plugin_loader.git
+    version: 0.4.3
+  # from sim.repos
+  ros_ws/src/ros_industrial_cmake_boilerplate:
+    type: git
+    url: https://github.com/ros-industrial/ros_industrial_cmake_boilerplate.git
+    version: 0.7.4
+  # from acq.repos
+  spatialnde2:
+    type: git
+    url: git@github.com:isuthermography/spatialnde2_staging
+    version: bug_timedtransactionrace
+  # from acq.repos
+  dataguzzler-python:
+    type: git
+    url: git@github.com:isuthermography/dataguzzler-python_staging
+    version: master
+  # from acq.repos
+  dgpython-param-manager:
+    type: git
+    url: git@github.com:lesthaeghet/dgpython-param-manager.git
+    version: master
+  # from acq.repos
+  dgpython-local:
+    type: git
+    url: git@github.com:isuthermography/dgpython-local.git
+    version: master
+  # from acq.repos
+  spatialnde2-ec-functions:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/spatialnde2-ec-functions_staging.git
+    version: main
+  # from acq.repos
+  ROS-Scanning:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/ROS-Scanning_staging
+    version: main
+  # from hw.repos
+  ros_ws/src/azure_kinect_ros_driver:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/azure_kinect_ros_driver_staging.git
+    version: main
+  # from hw.repos
+  ros_ws/src/keyence_experimental:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/keyence_experimental_staging.git
+    version: iron
+  # from hw.repos
+  ros_ws/src/keyence_interfaces:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/keyence_interfaces_staging.git
+    version: iron
+  # from hw.repos
+  ros_ws/src/azure_kinect_python_ros2_driver:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/azure_kinect_python_ros2_driver_staging.git
+    version: iron
+  # from hw.repos
+  ros_ws/src/libsocket:
+    type: git
+    url: https://github.com/dermesser/libsocket.git
+    version: 6214af728874b98055eefed293274540d98f6568
+  # from hw.repos
+  dgpython-azurekinect:
+    type: git
+    url: git@github.com:isuthermography/dgpython-azurekinect_staging.git
+    version: master
+  # from hw.repos
+  dgpython-nidaqmx:
+    type: git
+    url: git@github.com:lesthaeghet/dgpython-nidaqmx.git
+    version: master
+  # from hw.repos
+  dgpython-uniwest:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/dgpython-uniwest_private.git
+    version: master
+  # from hw.repos
+  dgpython-opencv-camera:
+    type: git
+    url: git@github.com:lesthaeghet/dgpython-opencv-camera.git
+    version: master
+  # from site.repos
+  ros_ws/src/tari_site:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/tari_site_private.git
+    version: iron
+  # from site.repos
+  ros_ws/src/csf_loader:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/csf_loader_private.git
+    version: iron

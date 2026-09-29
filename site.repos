@@ -20,7 +20,7 @@ repositories:
     # `_private`, not `_staging`: this is not on a path to public release. The
     # checkout path drops the suffix, as everywhere else.
     url: git@github.com:Adaptive-Robotic-NDE/tari_site_private.git
-    version: main
+    version: iron
 
   ros_ws/src/csf_loader:
     type: git

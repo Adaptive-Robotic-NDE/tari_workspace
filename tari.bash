@@ -35,6 +35,7 @@ ROSDISTRO="${ROSDISTRO:-iron}"
 LAYER=""
 ONLY_PHASE=""
 WITH_SOFA=0
+WITH_TEST_DATA=0
 DRYRUN=0
 DO_CHECK_REMOTES=0
 
@@ -72,9 +73,12 @@ run()  { if [[ $DRYRUN -eq 1 ]]; then printf '    + %s\n' "$*"; else eval "$@"; 
 usage() { sed -n '3,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; cat <<'EOF'
 
 Options:
-  --layer LAYER      sim | acq | hw | site   (required, unless --check-remotes)
+  --layer LAYER      container | sim | acq | hw | site   (required, unless
+                     --check-remotes). Each includes the ones before it.
   --phase PHASE      run one phase only (see the list above)
   --with-sofa        also fetch the SOFA binary release (1.3 GB, soft robotics)
+  --with-test-data   also clone the recorded scan fixtures the suites use
+                     (~95 MB over git-lfs; without it those sections skip)
   --check-remotes    test that every manifest URL resolves, then exit
   -n, --dry-run      print what would run
   -h, --help         this message
@@ -86,6 +90,7 @@ while [[ $# -gt 0 ]]; do
         --layer)         LAYER="${2:?--layer needs a value}"; shift ;;
         --phase)         ONLY_PHASE="${2:?--phase needs a value}"; shift ;;
         --with-sofa)     WITH_SOFA=1 ;;
+        --with-test-data) WITH_TEST_DATA=1 ;;
         --check-remotes) DO_CHECK_REMOTES=1 ;;
         -n|--dry-run)    DRYRUN=1 ;;
         -h|--help)       usage; exit 0 ;;
@@ -100,11 +105,12 @@ done
 # ---------------------------------------------------------------------------
 layer_chain() {
     case "$1" in
-        sim)  echo "sim" ;;
-        acq)  echo "sim acq" ;;
-        hw)   echo "sim acq hw" ;;
-        site) echo "sim acq hw site" ;;
-        *)    die "unknown layer: $1 (expected sim, acq, hw or site)" ;;
+        container) echo "container" ;;
+        sim)  echo "container sim" ;;
+        acq)  echo "container sim acq" ;;
+        hw)   echo "container sim acq hw" ;;
+        site) echo "container sim acq hw site" ;;
+        *)    die "unknown layer: $1 (expected container, sim, acq, hw or site)" ;;
     esac
 }
 layer_at_least() {  # layer_at_least acq  -> true when LAYER is acq, hw or site
@@ -128,7 +134,7 @@ check_remotes() {
     done < <(python3 - "$ROOT" <<'PYEOF'
 import sys, yaml, os
 root = sys.argv[1]
-for f in ("sim.repos", "acq.repos", "hw.repos", "site.repos"):
+for f in ("container.repos", "sim.repos", "acq.repos", "hw.repos", "site.repos"):
     p = os.path.join(root, f)
     if not os.path.exists(p):
         continue
@@ -208,9 +214,23 @@ phase_sources() {
         run "vcs import --input '$ROOT/$l.repos' '$ROOT'"
     done
 
+    if [[ $WITH_TEST_DATA -eq 1 ]]; then
+        install_test_data
+    fi
+
     if [[ $WITH_SOFA -eq 1 ]]; then
         install_sofa
     fi
+}
+
+install_test_data() {
+    local dir="$ROOT/test_data"
+    local url="git@github.com:Adaptive-Robotic-NDE/test_data_staging.git"
+    if [[ -d "$dir" ]]; then note "test data already present at $dir"; return 0; fi
+    command -v git-lfs >/dev/null 2>&1 \
+        || die "git-lfs is required for the test fixtures; install it first"
+    say "recorded scan fixtures (git-lfs)"
+    run "git clone '$url' '$dir'"
 }
 
 install_sofa() {

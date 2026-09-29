@@ -39,11 +39,20 @@ PACKAGES=(
     "dgpython-opencv-camera|dgpython_opencv_camera"
 )
 
-# Not installed by default. It is a Cython extension that does `import
-# spatialnde2` at build time, so it needs spatialnde2 installed first and a
-# working compiler, and nothing in the scan path requires it.
+# Not installed by default. These are Cython extensions that do `import
+# spatialnde2` at build time, so they need spatialnde2 installed first and a
+# working compiler.
+#
+# spatialnde2-ec-functions IS required by the eddy-current scan --
+# ec_acquisition.dpi imports it at its top and will not load without it. It is
+# an extra rather than a package because it costs a compile, it is useless on a
+# machine that does no eddy current, and the source is not yet on a remote (see
+# the commented-out entry in acq.repos). If you run EC scans, or want
+# ROS-Scanning's ec_conditioning_test.py to check the math rather than skip it,
+# install it.
 EXTRAS=(
     "dgpython-opencv-camera/spatialnde2_cpp_calibration_function|spatialnde2_cpp_calibration_function"
+    "spatialnde2-ec-functions|spatialnde2_ec_functions"
 )
 
 MODE=install

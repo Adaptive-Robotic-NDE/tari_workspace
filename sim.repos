@@ -41,7 +41,7 @@ repositories:
   ros_ws/src/dgpython-ros2motion:
     type: git
     url: git@github.com:Adaptive-Robotic-NDE/dgpython-ros2motion_staging
-    version: master
+    version: iron
 
   # ---- our forks of upstream --------------------------------------------
   # Each carries local commits on a `tari/iron` branch, each labelled with an

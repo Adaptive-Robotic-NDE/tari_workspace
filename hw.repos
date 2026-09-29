@@ -28,7 +28,35 @@ repositories:
   ros_ws/src/keyence_experimental:
     type: git
     url: git@github.com:Adaptive-Robotic-NDE/keyence_experimental_staging.git
-    version: main
+    version: iron
+
+  # keyence_experimental does not build without this package: it generates
+  # ChangeProgram.srv. It is published nowhere upstream, so this repository is
+  # the only copy; before it existed the package travelled between cell
+  # machines by hand.
+  ros_ws/src/keyence_interfaces:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/keyence_interfaces_staging.git
+    version: iron
+
+  # A pyk4a/numba Azure driver, and the ORIGIN of the Azure xacro macro and its
+  # mount meshes. Its absence is what made `launch_azure:=true` fail at xacro
+  # time with PackageNotFoundError on every machine here, and it is why both
+  # this workspace and the ultrasound cell grew separate hand-rolled
+  # replacements for the macro. The copy here came from the eddy-current cell's
+  # machine.
+  #
+  # NOTHING IN THE SIM LAYER DEPENDS ON IT and nothing should: the robot
+  # description carries the macro itself, so a machine with no Azure SDK still
+  # builds and still simulates. The driver NODE is what lives here, and it
+  # needs libk4a plus pyk4a and numba (requirements.txt) to run at all. The
+  # cells start Microsoft's C++ azure_kinect_ros_driver today; this is an
+  # alternative implementation, kept for provenance as much as for use.
+  #
+  ros_ws/src/azure_kinect_python_ros2_driver:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/azure_kinect_python_ros2_driver_staging.git
+    version: iron
 
   ros_ws/src/libsocket:
     type: git
@@ -52,9 +80,8 @@ repositories:
   dgpython-uniwest:
     type: git
     # `_private` rather than `_staging`: this one is not on a path to public
-    # release. Until 2026-08-19 its origin was "D:/Software Porter/
-    # dgpython-uniwest", a path on a Windows machine, so the only copy of this
-    # module was one working tree.
+    # release. Its origin was previously a local path on a Windows machine, so
+    # the only copy of this module was a single working tree.
     #
     # Dashes in the repository name and underscores in the package name is the
     # dataguzzler convention, and is why this is not renamed the way the ROS

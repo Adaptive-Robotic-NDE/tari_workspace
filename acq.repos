@@ -29,7 +29,7 @@ repositories:
   spatialnde2:
     type: git
     url: git@github.com:isuthermography/spatialnde2_staging
-    version: develop
+    version: bug_timedtransactionrace
 
   dataguzzler-python:
     type: git
@@ -48,7 +48,24 @@ repositories:
     url: git@github.com:isuthermography/dgpython-local.git
     version: master
 
+  # A COMPILED spatialnde2 math function (Cython over C++), not a
+  # dataguzzler-python module: it does the impedance-plane conditioning every
+  # eddy-current inspection needs -- null, rotation, per-axis gain -- across a
+  # whole trace list. It is compiled rather than written in a .dpi because every
+  # parameter is a recording, so that an operator turning the rotation re-runs
+  # the math on thousands of traces per adjustment; in Python that would hold
+  # the GIL for the duration of every adjustment.
+  #
+  # Built like the other Python distributions here (pip/setup.py), not by
+  # colcon. It needs spatialnde2 installed FIRST, because setup.py reads the
+  # compile flags out of the installed package.
+  #
+  spatialnde2-ec-functions:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/spatialnde2-ec-functions_staging.git
+    version: main
+
   ROS-Scanning:
     type: git
     url: git@github.com:Adaptive-Robotic-NDE/ROS-Scanning_staging
-    version: master
+    version: main
