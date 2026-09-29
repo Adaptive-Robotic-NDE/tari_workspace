@@ -283,7 +283,22 @@ install_test_data() {
     command -v git-lfs >/dev/null 2>&1 \
         || die "git-lfs is required for the test fixtures; install it first"
     say "recorded scan fixtures (git-lfs)"
-    run "git clone '$url' '$dir'"
+    run "git clone --quiet '$url' '$dir'"
+
+    # Having the git-lfs BINARY is not enough: clone only replaces pointers with
+    # content when the lfs filters are configured, and `git lfs install` may
+    # never have been run on this account. Without this the working tree holds
+    # pointer files, which is worse than having nothing -- the paths exist, so
+    # the suites read a pointer where they expect a mesh.
+    run "git -C '$dir' lfs install --local"
+    run "git -C '$dir' lfs pull"
+
+    local probe
+    probe="$(find "$dir" -name '*.ply' -print -quit 2>/dev/null)"
+    if [[ -n "$probe" ]] && head -c 40 "$probe" | grep -q 'git-lfs.github.com'; then
+        die "the fixtures are still git-lfs pointers, not content: $probe"
+    fi
+    note "fixtures fetched and verified as content, not pointers"
 }
 
 install_sofa() {
