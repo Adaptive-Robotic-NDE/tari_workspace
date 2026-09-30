@@ -24,6 +24,12 @@
 !site.repos
 !workspace.repos
 
+# --- checks over the bootstrap ---------------------------------------------
+# Static checks on the scripts above -- no target environment, no ROS, nothing
+# installed:  python3 -m pytest test/
+!test/
+!test/test_install_policy.py
+
 
 # --- the container ---------------------------------------------------------
 # The image definitions and the lifecycle script are one unit and now live in

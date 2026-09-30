@@ -36,19 +36,76 @@ dashes in the repository name, underscores in the package name — so
 
 ## What you need
 
-Ubuntu 22.04, or WSL2 running Ubuntu 22.04, with [ROS 2
-Iron](https://docs.ros.org/en/iron/Installation.html) installed from the
-official apt repository. Roughly 12 GB of disk for the simulation layer. No GPU
-is required — Gazebo will fall back to software rendering, slowly.
+Ubuntu 22.04, or WSL2 running Ubuntu 22.04, and `sudo`. Roughly 12 GB of disk
+for the simulation layer, plus about 3 GB for ROS itself. No GPU is required —
+Gazebo will fall back to software rendering, slowly.
+
+**You do not need to install ROS 2 Iron first.** `tari.bash --phase prereqs`
+adds the ROS apt repository and installs it, along with `colcon`, `vcstool` and
+`rosdep`. It has to do them in that order: those three are not in Ubuntu
+universe, they come only from the ROS repository, so there is no way to install
+them on a bare machine before the repository exists.
+
+Two things about Iron are worth knowing before you start.
+
+- **Iron reached end of life in November 2024, but its packages are still
+  published.** As of 2026-09-30 the jammy index carries 2164 `ros-iron-*`
+  binaries, frozen at their November 2024 builds, including everything here.
+  End of life means nothing new will appear, not that the suite has been
+  withdrawn. `rosdep` still knows Iron. The move to an LTS distribution is
+  nonetheless owed.
+- **The apt repository is added by upstream's own package, not by a
+  hand-written sources list.** Open Robotics now ship a versioned
+  `ros2-apt-source` deb that installs the signing key and the `.list` file
+  together, and `tari.bash --phase prereqs` fetches the current release of it
+  from GitHub and installs it. The key rotating or the host moving is then
+  upstream's problem rather than a fingerprint going stale in this repository.
+
+  It also steps around a live fault: `https://packages.ros.org` is a CNAME to
+  `ftp.osuosl.org`, which presents a certificate covering only `osuosl.org` and
+  `*.osuosl.org`, so the SNI never matches and every TLS client refuses it, on
+  IPv4 and IPv6 alike:
+
+  ```
+  curl: (60) SSL: no alternative certificate subject name matches
+        target host name 'packages.ros.org'
+  ```
+
+  The deb comes from GitHub releases over HTTPS with a valid certificate, and
+  apt still authenticates the repository itself by the detached GPG signature on
+  `InRelease` — which is why an unsigned or keyless workaround is never
+  acceptable here, whatever the transport is doing.
+
+> **On a shared machine, expect to replace an existing install.**
+> `spatialnde2` and `dataguzzler-python` are shared upstream projects, and
+> `dgpy_install.sh` installs them system-wide. Another project on the same
+> machine can perfectly well have its own checkout of either — usually an
+> earlier version of the same code. Converging on one version is the point, so
+> the installer replaces it and says which tree the previous copy came from:
+>
+>     warning: spatialnde2 was installed from /usr/local/src/spatialnde2/build,
+>              not from /home/you/tari -- replacing it.
+>
+> That warning is expected and is not a reason to stop. Note also that
+> `spatialnde2`, `dataguzzler-python` and several `dgpython-*` modules
+> legitimately have `isuthermography` remotes rather than this organisation's —
+> a collaboration, not a foreign package.
+>
+> **Look for a pip-installed Qt before building.** spatialnde2 compiles against
+> the system Qt (`qtbase5-dev`, `python3-pyqt5`, both from apt). A pip Qt wheel
+> is a second complete Qt inside `site-packages` — `PyQt6-Qt6` alone is 260 MB
+> of `libQt6*.so.6` with its own `sip` — and both `dataguzzler_python/Qt.py` and
+> spatialnde2's `snde_qt.i` typemaps choose bindings by what is importable or
+> already loaded, so a stray one changes which Qt a Qt5-compiled library talks
+> to. `tari.bash --phase python` warns about any it finds; clear them first:
+>
+>     sudo python3 -m pip uninstall PyQt6 PyQt6-Qt6 PyQt6_sip
 
 > You may find Docker tooling (`ros2_docker.sh`, `entrypoint.sh`, `docker/`)
 > sitting next to this repository on an existing machine. **It is not part of
 > this repository and you do not need it.** It exists because one development
 > machine runs Arch, where ROS Iron is not packaged, and it is not how this
 > stack is meant to be deployed. Everything below installs natively.
-
-> Iron reached end of life in December 2024. Nothing here depends on Iron
-> specifically, but the move to an LTS distribution is owed.
 
 ## Quick start — simulation
 
@@ -130,11 +187,31 @@ project real time, twice.
 `dgpy_install.sh` refuses to install anything carrying a `package.xml`, which
 makes the mistake impossible rather than merely documented.
 
-### Installs are not editable
+### One install command, and it is never editable
 
-Every Python package is installed with `pip install --no-deps
---no-build-isolation`. Editing a source file therefore changes nothing until you
-reinstall, and nothing tells you so. Two things make that manageable:
+Every Python package here — `spatialnde2`, `dataguzzler-python`, every
+`dgpython-*` module, the optional extras — is installed with exactly this, and
+nothing else:
+
+```bash
+sudo pip install --no-deps --no-build-isolation .
+```
+
+Not `-e`. Not `--user`. Not a bare `pip install .`. Each part earns its place:
+
+| | |
+|---|---|
+| `sudo` | System-wide, so one deliberate install is what every shell and every service runs. An unprivileged install lands in `~/.local`, which precedes the system directories on `sys.path` — it silently shadows the real install, and then which shell installed a package decides what the next one runs. |
+| `--no-deps` | pip resolves nothing, so it cannot substitute a version nobody chose for one this stack was built against. |
+| `--no-build-isolation` | The compiled parts build against the interpreter and headers actually present, rather than against a throwaway environment pip assembles. |
+| never `-e` | An editable install makes what runs depend on the state of a working tree rather than on something deliberately installed, so a stale or half-finished checkout becomes the running code with nothing to say so. |
+
+`dgpy_install.sh` runs precisely that command for every package, and
+`--dry-run` prints it verbatim before running anything.
+
+**Editing a source file therefore changes nothing until you reinstall, and
+nothing tells you so.** That is the intended behaviour, not a problem to work
+around: what runs is what was installed. Two things make it manageable:
 
 ```bash
 ./dgpy_install.sh --check
@@ -143,7 +220,17 @@ reinstall, and nothing tells you so. Two things make that manageable:
 Every package carries a `setuptools_scm` version embedding the commit it was
 built from, so this reports exactly which installed copies no longer match the
 source you have checked out — including copies built from a dirty tree, which
-match no commit at all.
+match no commit at all. It also reports the two ways the install itself can be
+wrong rather than merely out of date: `EDITABLE`, and `USER-SITE` for a per-user
+copy shadowing the system one. Remove that copy (`pip uninstall <name>`) before
+reinstalling — a reinstall alone would not change what runs.
+
+Two more states matter. `ABSENT` means the source is not checked out at all,
+which on a machine that imported only `acq.repos` is the ordinary state of the
+instrument drivers and is not a finding. `BROKEN` means the installed copy
+carries exactly the right version and still does not load — the two compiled
+packages are import-tested rather than only version-compared, because a matching
+version string is not evidence that the shared libraries next to it resolve.
 
 ```bash
 ./dgpy_install.sh --only spatialnde2
@@ -166,8 +253,29 @@ that `rosdep` structurally cannot supply; `tari.bash --layer hw` checks for both
 and stops with instructions rather than building a driver without its SDK.
 
 1. **Azure Kinect Sensor SDK** (`libk4a`) from `packages.microsoft.com`. On
-   22.04 the packages come from the 18.04 pool. It requires accepting a licence,
-   so it cannot be automated.
+   22.04 the packages come from the 18.04 pool, and `libsoundio1` — which
+   `libk4a1.4` hard-depends on and jammy does not carry — has to come from
+   focal. `tari.bash --layer hw` prints the whole procedure, command by command,
+   and it is worth reading before running: it temporarily adds a *different
+   Ubuntu release's* archive to the machine, which is why it is a manual step
+   and not automated.
+
+   Two things about it that cost time, both now in the script's printed
+   instructions. The focal source must be pinned below jammy
+   (`Pin-Priority: 100`) so nothing other than `libsoundio1` can ever be
+   satisfied from it. And `libk4a1.4`'s `preinst` calls
+   `db_fset accept-eula seen false` *before* asking, so under
+   `DEBIAN_FRONTEND=noninteractive` the question cannot be asked at all and the
+   install dies with `eula agree question could not be asked`. Preseeding
+   `accept-eula` does not help for the same reason; the way through is the
+   environment variable the `preinst` checks first, `ACCEPT_EULA=Y`, which
+   accepts Microsoft's licence.
+
+   Check it with `find_package(k4a)`, or at least
+   `ls /usr/lib/x86_64-linux-gnu/cmake/k4a/k4aConfig.cmake` — a missing
+   `k4aConfig.cmake` is exactly how the build fails later, with an error that
+   says nothing about a camera. Do not check it by running `k4aviewer`, which
+   needs a camera and a display.
 2. **NI-DAQmx** from National Instruments, for the eddy-current DAQ.
    Proprietary, x86-64 only.
 3. **A cell manifest with measured numbers**, which is not a package install.
@@ -214,4 +322,38 @@ Some repositories referenced by the manifests do not exist yet; each is marked
 ```
 
 That tests every manifest URL and tells you which resolve. A `PENDING` entry
-failing is expected; anything else failing is a real fault.
+failing is expected; anything else failing is a real fault. As of 2026-09-30
+every URL in every manifest resolves.
+
+### What does not work yet on a clean Ubuntu 22.04
+
+All 47 colcon packages across `sim`, `hw` and `site` build, and the simulated
+cell comes up — 26 nodes, MoveIt planning and IK, both controllers active,
+Gazebo publishing `/clock` and `/joint_states`. Four things do not, and each is
+a missing dependency rather than a build failure, so nothing in a build log
+mentions them. Bring-up reports the nodes as started because it checks the graph
+before they exit.
+
+- **The `sim` layer alone cannot start the cell.** `tari_ur_description`'s Azure
+  macro takes its two meshes from `$(find azure_kinect_ros_driver)`, which is a
+  `hw` package, and the shipped `sim` manifest has the Azure welded into the
+  URDF — so `xacro` fails with `PackageNotFoundError` and Gazebo, MoveIt and
+  `move_group` never start. Import `hw.repos` as well, until the meshes move
+  into `tari_ur_description` where the rest of the geometry lives.
+- **`bpy` is unobtainable here**, so `tari_mesh_filter_srv` and `x3d_converter`
+  cannot run. jammy's `blender` 3.0.1 installs no Python module and PyPI has no
+  `bpy` wheel for CPython 3.10 on Linux. They need Blender's own interpreter, or
+  a Blender built as a module. Everything that does not do mesh filtering is
+  unaffected.
+- **`ultralytics` and `lap` are not installed**, so YOLO is skipped. That is
+  deliberate: the closure pulls torch. Bring-up names it as a SKIP with the
+  reason, which is the behaviour to want.
+- **`pyquaternion` and `trimesh` come from pip, not apt** — no Ubuntu package
+  and no rosdep key exists for either, so only `tari.bash --phase prereqs`
+  installs them. `trimesh` is pinned below 4: the current release needs a newer
+  numpy than the 1.21.5 that `python3-open3d` 0.14.1 is built against, and fails
+  at import with `'numpy._DTypeMeta' object is not subscriptable`. Do not fix
+  that by upgrading numpy.
+
+`ros2plugin` is skipped by every build unless `--with-sofa` was given, and that
+is by design; it is the only package in the tree that is not built.

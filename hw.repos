@@ -20,6 +20,13 @@
 repositories:
 
   # ---- ROS driver packages ----------------------------------------------
+  # Microsoft's C++ Azure Kinect driver, and the only Azure driver the cells
+  # start. NOTHING IN THE SIM LAYER DEPENDS ON IT. The camera's body meshes used
+  # to be read out of it by the robot description, which made the description
+  # unrenderable without this package -- including in simulation, where there is
+  # no driver to run. tari_ur_description carries its own copies now, and
+  # tari_bringup/test/test_description_dependencies.py fails if a description a
+  # cell launches reaches across a layer again.
   ros_ws/src/azure_kinect_ros_driver:
     type: git
     url: git@github.com:Adaptive-Robotic-NDE/azure_kinect_ros_driver_staging.git

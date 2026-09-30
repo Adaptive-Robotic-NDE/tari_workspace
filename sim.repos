@@ -21,6 +21,16 @@
 # dataguzzler-python modules simply are not importable until the acq layer
 # installs dataguzzler-python, and colcon builds them fine regardless.
 #
+# SELF-CONTAINED MEANS THE ROBOT DESCRIPTION TOO, and that is the half that is
+# easy to lose. A `$(find <package>)` in a xacro is resolved every time the
+# description is rendered, so a mesh or an include reaching into a hardware-layer
+# package does not degrade gracefully: xacro raises PackageNotFoundError and
+# Gazebo, MoveIt and move_group never start. Gating the include is not enough,
+# because a reference inside the file the gate lets in resolves whenever the gate
+# is open, and the shipped sim cell opens the Azure gate.
+# tari_bringup/test/test_description_dependencies.py checks every package a cell
+# manifest launches, and needs no ROS to run.
+#
 # Version policy: our own repositories track a branch, because they are under
 # active development and pinning them would mean a manifest commit per change.
 # Third-party repositories are pinned to the exact commit that is known to
