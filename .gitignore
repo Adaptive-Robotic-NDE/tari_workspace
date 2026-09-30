@@ -29,6 +29,8 @@
 # installed:  python3 -m pytest test/
 !test/
 !test/test_install_policy.py
+!test/test_script_robustness.py
+!test/test_extension_portability.py
 
 
 # --- the container ---------------------------------------------------------

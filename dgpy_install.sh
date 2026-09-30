@@ -128,9 +128,22 @@ declare -A IMPORT_PROBE=(
 # with the same TypeError at the same numpy/distutils/ccompiler.py:771. It is
 # not an extra, so nothing had ever passed the variable to it.
 # ---------------------------------------------------------------------------
+#
+# spatialnde2_cpp_calibration_function: the third case, and it hid behind the
+# fact that the extra could not be built at all until its setup.py was fixed.
+# It cythonizes calibration_function.pyx exactly as its sibling extra does, so
+# it fails at the same numpy/distutils/ccompiler.py:771. Measured on lablinux
+# 2026-09-30: `pip wheel` with the variable set succeeds and the identical
+# command without it dies with the TypeError, so the key is what separates an
+# optional extra that builds on Ubuntu 22.04 from one that reports itself
+# unbuildable. Note that the key is the DIRECTORY as EXTRAS spells it, path and
+# all -- BUILD_ENV is looked up by the first field of the entry, not by the
+# distribution name.
+# ---------------------------------------------------------------------------
 declare -A BUILD_ENV=(
     [spatialnde2-ec-functions]="SETUPTOOLS_USE_DISTUTILS=stdlib"
     [dgpython-azurekinect]="SETUPTOOLS_USE_DISTUTILS=stdlib"
+    [dgpython-opencv-camera/spatialnde2_cpp_calibration_function]="SETUPTOOLS_USE_DISTUTILS=stdlib"
 )
 
 MODE=install
@@ -598,17 +611,63 @@ cmake_prebuild() {
     ( cd "$bld" && cmake "${SNDE_CMAKE_OPTS[@]}" .. && make -j"$JOBS" )
 }
 
+# SETUPTOOLS_USE_DISTUTILS=stdlib is the cure for one fault and the cause of
+# another, and which one you get depends entirely on the interpreter.
+#
+# It tells setuptools to use the STANDARD LIBRARY's distutils instead of its own
+# vendored copy. On Python 3.11 and earlier that is what makes a cythonizing
+# setup.py build at all (see the BUILD_ENV comment above). But distutils was
+# REMOVED from the standard library in Python 3.12, so on a newer interpreter
+# there is nothing for the variable to select and setuptools cannot even load its
+# own build backend:
+#
+#     pip._vendor.pyproject_hooks._impl.BackendUnavailable:
+#         Cannot import 'setuptools.build_meta'
+#
+# Measured on this workspace's Arch host (Python 3.14.7): with the variable set,
+# `pip wheel` on spatialnde2-ec-functions and on
+# spatialnde2_cpp_calibration_function both fail that way before a compiler runs;
+# without it, both build. So the splice is decided by asking the interpreter that
+# will do the build, not by hardcoding either answer. Anything else makes the
+# script work on exactly one of the two machines this workspace runs on.
+interpreter_has_stdlib_distutils() {
+    "$PY" - <<'PYEOF' >/dev/null 2>&1
+import sys
+sys.exit(0 if sys.version_info < (3, 12) else 1)
+PYEOF
+}
+
+INTERPRETER_HAS_STDLIB_DISTUTILS=0
+interpreter_has_stdlib_distutils && INTERPRETER_HAS_STDLIB_DISTUTILS=1
+
+# The environment assignments that apply to this package ON THIS INTERPRETER.
+build_env_for() {
+    local dir="$1" assignment out=()
+    for assignment in ${BUILD_ENV[$dir]:-}; do
+        if [[ "$assignment" == SETUPTOOLS_USE_DISTUTILS=stdlib \
+              && $INTERPRETER_HAS_STDLIB_DISTUTILS -eq 0 ]]; then
+            continue
+        fi
+        out+=("$assignment")
+    done
+    printf '%s\n' "${out[@]:-}"
+}
+
 # The install command for one package: PIP_INSTALL, with an `env` assignment
 # spliced in after the sudo prefix when that package's build needs one. The pip
 # part is taken from PIP_INSTALL rather than written out again, so there is still
 # exactly one place that says how a package is installed.
 pip_command_for() {
     local dir="$1"
-    if [[ -z "${BUILD_ENV[$dir]:-}" ]]; then
+    local -a env_args=()
+    mapfile -t env_args < <(build_env_for "$dir")
+    # mapfile on empty input still yields one empty element.
+    [[ ${#env_args[@]} -eq 1 && -z "${env_args[0]}" ]] && env_args=()
+    if [[ ${#env_args[@]} -eq 0 ]]; then
         printf '%s\0' "${PIP_INSTALL[@]}"
         return
     fi
-    printf '%s\0' "${SUDO[@]}" env "${BUILD_ENV[$dir]}" \
+    printf '%s\0' "${SUDO[@]}" env "${env_args[@]}" \
                   "${PIP_INSTALL[@]:${#SUDO[@]}}"
 }
 

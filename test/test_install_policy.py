@@ -360,8 +360,14 @@ def test_dry_run_matches_what_is_actually_run(tmp_path):
     env["PATH"] = f"{stub_dir}{os.pathsep}{env['PATH']}"
     env["SUDO_STUB_LOG"] = str(log)
 
+    # --force on BOTH sides. Without it the dry run asks a different question
+    # from the real one: on a machine where this package is already installed and
+    # current the installer prints "dgpython-local is current" and no command at
+    # all, so the comparison had nothing to compare and the test failed wherever
+    # the stack was actually installed -- which is every machine this is meant to
+    # describe.
     dry = subprocess.run(
-        [INSTALLER, "--dry-run", "--only", package],
+        [INSTALLER, "--dry-run", "--force", "--only", package],
         cwd=ROOT, capture_output=True, text=True, env=env,
     )
     assert dry.returncode == 0, dry.stderr
