@@ -306,8 +306,13 @@ def test_dry_run_of_the_extras_prints_the_required_form():
     only place it is allowed: dgpython-azurekinect is a regular package that also
     has to build with SETUPTOOLS_USE_DISTUTILS=stdlib.
     """
+    # --force for the same reason as the two tests below: on a machine where the
+    # stack is actually installed and current, a dry run without it prints
+    # "X is current" and no command at all, and the assertion below has nothing
+    # to look at. The question here is what the command LOOKS like, not whether
+    # anything is due.
     result = subprocess.run(
-        [INSTALLER, "--with-extras", "--dry-run"],
+        [INSTALLER, "--with-extras", "--dry-run", "--force"],
         cwd=ROOT, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
@@ -319,8 +324,15 @@ def test_dry_run_of_the_extras_prints_the_required_form():
 
 @skip_if_root
 def test_dry_run_prints_the_required_form():
+    # --force, or this test asks a question the machine can answer with silence.
+    # dgpy_install.sh skips a package whose installed copy already matches the
+    # checked-out commit, so on a fully bootstrapped machine a plain --dry-run
+    # prints eight "X is current" lines and no install command, and `commands`
+    # is empty. That is the state a successful bootstrap LEAVES BEHIND, so the
+    # test failed precisely where it should have passed. Measured on a clean
+    # jammy bootstrap 2026-09-30.
     result = subprocess.run(
-        [INSTALLER, "--dry-run"], cwd=ROOT, capture_output=True, text=True,
+        [INSTALLER, "--dry-run", "--force"], cwd=ROOT, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
     commands = parse_dry_run(result.stdout)

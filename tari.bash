@@ -326,11 +326,16 @@ socat
 python3-opencv
 python3-yaml
 python3-pytest
-# bpy's declared dependencies, from apt so pip does not choose them.
+# Three of bpy's four declared dependencies, from apt so pip does not choose
+# them. The fourth, zstandard, IS NOT AN UBUNTU 22.04 PACKAGE under that name --
+# `apt-cache policy python3-zstandard` finds nothing and apt fails the whole
+# install line with "E: Unable to locate package python3-zstandard", which takes
+# the prereqs phase down with it. python3-zstd is a DIFFERENT binding (module
+# `zstd`, not `zstandard`), so it does not satisfy the dependency. install_bpy
+# pip-installs it; see the note there.
 cython3
 python3-numpy
 python3-requests
-python3-zstandard
 EOF
 }
 
@@ -375,15 +380,30 @@ EOF
 #     --extra-index-url https://download.blender.org/pypi/
 #
 # which serves bpy-4.0.0-cp310-cp310-manylinux_2_28_x86_64.whl. Two things follow.
-# It is a 390 MB wheel, so it is installed only from the sim layer up, where those
+# It is a 390 MB wheel that unpacks to 1.3 GB, so it is installed only from the sim
+# layer up, where those
 # two nodes live. And it declares `Requires-Python: ==3.10.*`, exactly -- so it
 # resolves on jammy and on nothing newer; a machine on a later Python needs
 # Blender's own interpreter instead.
 #
-# Its four dependencies come from apt, not from pip: --no-deps is the rule here,
-# and letting pip resolve cython, numpy, requests and zstandard would put versions
+# THREE of its four dependencies come from apt, not from pip: --no-deps is the
+# rule here, and letting pip resolve cython, numpy and requests would put versions
 # nobody chose ahead of the apt copies on sys.path for every project on the
 # machine.
+#
+# The fourth, `zstandard`, has no Ubuntu 22.04 package. `python3-zstandard` does
+# not exist -- naming it in the apt list fails the entire install line with
+#
+#     E: Unable to locate package python3-zstandard
+#
+# and takes the prereqs phase with it. `python3-zstd` is NOT a substitute: it is
+# a different binding providing the module `zstd`. So this one is pip'd, --no-deps
+# like the rest, next to bpy itself.
+#
+# It is a soft dependency in practice: only bpy's `blend_render_info` imports it,
+# to read a zstd-compressed .blend header, and it does so lazily. `import bpy`,
+# the mesh API and `bpy.ops.uv.smart_project` all work without it -- measured on
+# jammy 2026-09-30 -- so its absence is a warning, not a failure.
 #
 # ONE IS STILL NOT HERE:
 #
@@ -411,16 +431,32 @@ install_pip_prereqs() {
 #: Blender's own package index. bpy is not on PyPI; see the note above.
 BPY_INDEX="https://download.blender.org/pypi/"
 
+# zstandard, the one bpy dependency apt cannot supply. Separate from install_bpy
+# on purpose, and called even when bpy is already there: a machine bootstrapped
+# before this existed has bpy and not this, and an early return inside
+# install_bpy would never top it up.
+install_bpy_zstandard() {
+    python3 -c 'import zstandard' 2>/dev/null && return 0
+    note "zstandard -- no Ubuntu package under that name, and python3-zstd is a"
+    note "different binding (module 'zstd') that does not satisfy it"
+    run "sudo python3 -m pip install --no-deps zstandard" \
+        || warn "zstandard did not install. Only bpy's blend_render_info imports
+   it, lazily, to read a zstd-compressed .blend header; the mesh API and
+   bpy.ops.uv.smart_project do not need it."
+    return 0
+}
+
 install_bpy() {
     # Only from the sim layer up: the two nodes that import it are ROS nodes, and
-    # the wheel is 390 MB.
+    # the wheel is 390 MB and unpacks to 1.3 GB.
     layer_at_least sim || return 0
     if python3 -c 'import bpy' 2>/dev/null; then
         note "bpy already present"
+        install_bpy_zstandard
         return 0
     fi
     say "bpy (Blender as a Python module)"
-    note "390 MB, from ${BPY_INDEX} -- it is not on PyPI"
+    note "390 MB wheel, 1.3 GB installed, from ${BPY_INDEX} -- it is not on PyPI"
     # Requires-Python is ==3.10.*, so say so before pip does: on anything else the
     # resolver reports only that no version matched, which reads as a network or
     # index fault rather than an interpreter one.
@@ -433,6 +469,7 @@ install_bpy() {
         return 0
     fi
     run "sudo python3 -m pip install --no-deps --extra-index-url '$BPY_INDEX' bpy"
+    install_bpy_zstandard
     if [[ $DRYRUN -eq 0 ]] && ! python3 -c 'import bpy' 2>/dev/null; then
         warn "bpy installed but does not import; tari_mesh_filter_srv and"
         warn "x3d_converter will fail. Check its apt dependencies above."
