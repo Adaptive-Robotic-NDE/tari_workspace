@@ -326,6 +326,11 @@ socat
 python3-opencv
 python3-yaml
 python3-pytest
+# bpy's declared dependencies, from apt so pip does not choose them.
+cython3
+python3-numpy
+python3-requests
+python3-zstandard
 EOF
 }
 
@@ -361,14 +366,27 @@ EOF
 # so installing the current trimesh looks fine and then fails at import. 3.23.5
 # is what resolves and works here. Never fix this by upgrading numpy.
 #
-# TWO MORE ARE NOT HERE, because they cannot be satisfied this way:
+# bpy IS AVAILABLE, BUT NOT FROM PyPI. tari_mesh_filter_srv and x3d_converter do
+# `import bpy` at the top and die without it, and jammy's blender package ships no
+# Python module at all (dpkg -L blender lists nothing named bpy). A plain
+# `pip install bpy` also fails, which is what makes this look impossible. Blender
+# publish their own index:
 #
-#   bpy          tari_mesh_filter_srv and x3d_converter do `import bpy` at the
-#                top and die without it. jammy's blender ships no Python module,
-#                and PyPI has no bpy wheel for CPython 3.10 on Linux, so on
-#                22.04 there is no `import bpy` for the system interpreter at
-#                all. Those two nodes cannot run on this platform; they need
-#                Blender's own interpreter, or a Blender built as a module.
+#     --extra-index-url https://download.blender.org/pypi/
+#
+# which serves bpy-4.0.0-cp310-cp310-manylinux_2_28_x86_64.whl. Two things follow.
+# It is a 390 MB wheel, so it is installed only from the sim layer up, where those
+# two nodes live. And it declares `Requires-Python: ==3.10.*`, exactly -- so it
+# resolves on jammy and on nothing newer; a machine on a later Python needs
+# Blender's own interpreter instead.
+#
+# Its four dependencies come from apt, not from pip: --no-deps is the rule here,
+# and letting pip resolve cython, numpy, requests and zstandard would put versions
+# nobody chose ahead of the apt copies on sys.path for every project on the
+# machine.
+#
+# ONE IS STILL NOT HERE:
+#
 #   ultralytics  plus `lap`, for yolo_ros. Deliberately left out: the wheel
 #                closure pulls torch, which is gigabytes and its own CUDA
 #                decision. Bring-up already SKIPs yolo by name when they are not
@@ -388,6 +406,37 @@ install_pip_prereqs() {
     note "${missing[*]}"
     # --no-deps, system-wide, same rule as every other install here.
     run "sudo python3 -m pip install --no-deps $(printf "'%s' " "${missing[@]}")"
+}
+
+#: Blender's own package index. bpy is not on PyPI; see the note above.
+BPY_INDEX="https://download.blender.org/pypi/"
+
+install_bpy() {
+    # Only from the sim layer up: the two nodes that import it are ROS nodes, and
+    # the wheel is 390 MB.
+    layer_at_least sim || return 0
+    if python3 -c 'import bpy' 2>/dev/null; then
+        note "bpy already present"
+        return 0
+    fi
+    say "bpy (Blender as a Python module)"
+    note "390 MB, from ${BPY_INDEX} -- it is not on PyPI"
+    # Requires-Python is ==3.10.*, so say so before pip does: on anything else the
+    # resolver reports only that no version matched, which reads as a network or
+    # index fault rather than an interpreter one.
+    local pyver
+    pyver="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+    if [[ "$pyver" != "3.10" ]]; then
+        warn "bpy publishes CPython 3.10 wheels only and this is Python $pyver."
+        warn "tari_mesh_filter_srv and x3d_converter will not run; they need"
+        warn "Blender's own interpreter on this platform."
+        return 0
+    fi
+    run "sudo python3 -m pip install --no-deps --extra-index-url '$BPY_INDEX' bpy"
+    if [[ $DRYRUN -eq 0 ]] && ! python3 -c 'import bpy' 2>/dev/null; then
+        warn "bpy installed but does not import; tari_mesh_filter_srv and"
+        warn "x3d_converter will fail. Check its apt dependencies above."
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -552,6 +601,7 @@ phase_prereqs() {
     run "sudo apt-get install -y --no-remove ${pkgs[*]}"
     ensure_working_vcs
     install_pip_prereqs
+    install_bpy
     install_hw_python_prereqs
 
     # ROS itself, and the packages rosdep cannot reach. Idempotent: apt does
@@ -563,7 +613,11 @@ phase_prereqs() {
     else
         note "not present; installing (about 930 packages, a few minutes)"
     fi
-    run "sudo apt-get install -y --no-remove $(ros_apt_packages | tr '\n' ' ')"
+    # Comments and blank lines are stripped, so the list above can be annotated.
+    # Without this a `# note` line becomes an apt argument and the install fails
+    # on a package named '#'.
+    run "sudo apt-get install -y --no-remove $(ros_apt_packages \
+         | sed -e 's/#.*//' -e '/^[[:space:]]*$/d' | tr '\n' ' ')"
     if [[ ! -d "/opt/ros/$ROSDISTRO" ]]; then
         fatal_unless_dry "apt finished but there is still no /opt/ros/$ROSDISTRO.
    If apt could not find the ros-$ROSDISTRO-* packages, check
