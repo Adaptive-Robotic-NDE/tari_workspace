@@ -117,9 +117,10 @@ declare -A IMPORT_PROBE=(
 #
 # SETUPTOOLS_USE_DISTUTILS=stdlib makes `distutils` the standard library's, whose
 # CCompiler signature is the one numpy.distutils was written against, and the
-# build succeeds. The alternative -- pinning setuptools below 80 -- is not
-# available on a shared machine: setuptools there may belong to another project,
-# and downgrading it to build ours is not ours to do.
+# build succeeds. It is still set even though ensure_build_prereqs now holds
+# setuptools below 80 (see SETUPTOOLS_CEILING there): the variable is also what
+# makes these three build on the Arch host, and it costs nothing where the
+# vendored distutils would have worked anyway.
 # ---------------------------------------------------------------------------
 #
 # dgpython-azurekinect: the same fault, from the same cause. Its setup.py calls
@@ -400,8 +401,96 @@ print(location)
 PYEOF
 }
 
+# ---------------------------------------------------------------------------
+# The one case report_foreign_install SAYS it handles and could not.
+#
+# report_foreign_install prints "X was installed from <tree>, not from <root>
+# -- replacing it", and then pip refuses to do the replacing:
+#
+#     error: uninstall-distutils-installed-package
+#     x Cannot uninstall dgpython_nidaqmx 0.0.0
+#     '-> It is a distutils installed project and thus we cannot accurately
+#         determine which files belong to it which would lead to only a partial
+#         uninstall.
+#
+# Measured on marvin 2026-09-30: dgpython_nidaqmx and dgpython_uniwest failed
+# this way on FOUR consecutive runs of the python phase and never recovered,
+# because nothing about re-running changes the thing in the way. Their previous
+# copies came from `python3 setup.py install` out of /usr/local/src, which
+# leaves `<name>.egg-info` metadata and no RECORD, so pip cannot know which
+# files to delete and -- correctly -- will not guess.
+#
+# pip cannot remove it, so pip is not the tool. The metadata directory is what
+# makes pip refuse, and deleting it turns the install back into plain files that
+# the new wheel overwrites. Narrow on purpose:
+#
+#   * only LEGACY metadata -- a .egg-info / .egg-link / .egg path. A .dist-info
+#     is a normal pip install and pip replaces those itself.
+#   * only for the distribution names in PACKAGES and EXTRAS, which is all this
+#     function is ever called with.
+#   * never a path dpkg owns. python3-* debs ship .egg-info directories too, and
+#     an apt-managed one is not ours to delete under any circumstances.
+# ---------------------------------------------------------------------------
+# Prints the metadata path when the installed dist carries LEGACY metadata;
+# prints nothing when it is absent or is a normal .dist-info install.
+legacy_metadata_path() {
+    "$PY" - "$1" <<'PYEOF' 2>/dev/null
+import os
+import sys
+from importlib.metadata import distribution, PackageNotFoundError
+
+try:
+    dist = distribution(sys.argv[1])
+except PackageNotFoundError:
+    sys.exit(0)
+
+# PathDistribution records the metadata directory it was read from. Anything
+# else (a custom finder) cannot be repaired by deleting a path, so say nothing.
+path = getattr(dist, "_path", None)
+if path is None:
+    sys.exit(0)
+path = os.path.realpath(str(path))
+if path.endswith((".egg-info", ".egg-link", ".egg")):
+    print(path)
+PYEOF
+}
+
+# One place that runs a privileged non-pip command, so the sudo-or-already-root
+# decision is made once and PIP_INSTALL stays the only thing that spells out an
+# install.
+run_privileged() {
+    if [[ ${#SUDO[@]} -eq 0 ]]; then
+        "$@"
+    else
+        "${SUDO[@]}" "$@"
+    fi
+}
+
+remove_legacy_metadata() {
+    local dist="$1" path owner
+    path="$(legacy_metadata_path "$dist")"
+    [[ -n "$path" ]] || return 0
+    if command -v dpkg >/dev/null 2>&1; then
+        owner="$(dpkg -S "$path" 2>/dev/null || true)"
+        if [[ -n "$owner" ]]; then
+            die "$dist's installed metadata at
+   $path
+   belongs to the Debian package '${owner%%:*}'. That is an apt-managed copy of
+   this distribution name and this script will not delete it. Remove the apt
+   package first if it really is meant to be replaced by a source install."
+        fi
+    fi
+    warn "$dist's existing install is a setup.py (egg-info) one at
+   $path
+   pip cannot uninstall that -- it keeps no file list -- so it refuses with
+   'uninstall-distutils-installed-package' and the install can never succeed.
+   Removing the metadata; the wheel below overwrites the files themselves."
+    run_privileged rm -rf "$path"
+    return 0
+}
+
 # Prints one of OK / STALE / DIRTY / MISSING / UNVERSIONED / EDITABLE /
-# USER-SITE, then a detail line.
+# USER-SITE / LEGACY, then a detail line.
 package_status() {
     local dir="$1" dist="$2" info ver kind loc head short
     # Not checked out at all. PACKAGES is the whole workspace in dependency
@@ -430,6 +519,16 @@ package_status() {
     fi
     if [[ "$kind" == user ]]; then
         echo "USER-SITE|$ver under $loc, which shadows the system install"
+        return
+    fi
+    # Also the install rule being broken rather than drift, and reported before
+    # the version comparison for the same reason: whatever version it claims,
+    # a plain reinstall over it cannot work (see remove_legacy_metadata). An
+    # install run repairs it; --check has to be able to say so.
+    local legacy
+    legacy="$(legacy_metadata_path "$dist")"
+    if [[ -n "$legacy" ]]; then
+        echo "LEGACY|$ver was installed by setup.py; metadata at $legacy"
         return
     fi
     if [[ ! -d "$ROOT/$dir/.git" ]]; then
@@ -695,6 +794,10 @@ install_one() {
         assert_writable_tree "$dir"
         cmake_prebuild "$dir" || return 1
     fi
+    # After the build, before the install: pip's refusal to replace a setup.py
+    # install is the last thing standing between a successfully built wheel and
+    # an installed one, and clearing it is pointless if the build failed.
+    remove_legacy_metadata "$dist"
     ( cd "$srcdir" && "${cmd[@]}" . )
 }
 
@@ -742,6 +845,7 @@ done
 if [[ "$MODE" == check ]]; then
     rc=0
     misplaced=0
+    legacy_seen=0
     printf '%-26s %-12s %s\n' "PACKAGE" "STATE" "DETAIL"
     for i in "${INDICES[@]}"; do
         entry="${PACKAGES[$i]}"; dir="${entry%%|*}"; dist="${entry##*|}"
@@ -755,6 +859,7 @@ if [[ "$MODE" == check ]]; then
             ABSENT)              colour="\033[90m" ;;
             DIRTY)               colour="\033[33m"; rc=1 ;;
             EDITABLE|USER-SITE)  colour="\033[31m"; rc=1; misplaced=1 ;;
+            LEGACY)              colour="\033[31m"; rc=1; legacy_seen=1 ;;
             *)                   colour="\033[31m"; rc=1 ;;
         esac
         printf "%-26s ${colour}%-12s\033[0m %s\n" "$dir" "$state" "$detail"
@@ -778,30 +883,87 @@ if [[ "$MODE" == check ]]; then
         echo "-- and then reinstall. A per-user copy precedes the system one on"
         echo "sys.path, so reinstalling without removing it would not change what runs."
     fi
+    if [[ $legacy_seen -eq 1 ]]; then
+        echo
+        echo "LEGACY means the installed copy came from 'python3 setup.py install', which"
+        echo "leaves no file list -- so pip refuses to replace it with"
+        echo "'uninstall-distutils-installed-package' however many times you re-run. An"
+        echo "install run removes that metadata first and then installs normally; nothing"
+        echo "has to be done by hand."
+    fi
     exit $rc
 fi
 
 # ---------------------------------------------------------------------------
 # install
 # ---------------------------------------------------------------------------
+# setuptools is needed in a WINDOW, not from a floor upwards, and the upper end
+# of it is not a style preference. Measured on a clean jammy bootstrap
+# (marvin, 2026-09-30): this function used to ask for `-U "setuptools>=64"`,
+# which resolved to 84.0.0 and wrote it into /usr/local/lib/python3.10/
+# dist-packages, ahead of apt's 59.6.0 on sys.path. Everything below broke in
+# the same run, and pip warned about it inside the very command that caused it:
+#
+#     colcon-core 0.21.3 requires setuptools<80,>=30.3.0, but you have
+#     setuptools 84.0.0 which is incompatible
+#
+#   * `import pkg_resources` stopped working, which is `from pkg_resources
+#     import load_entry_point` in /usr/bin/vcs (so no `vcs import`), and
+#     `import pkg_resources` in /usr/lib/python3/dist-packages/pbr/git.py --
+#     reached through a setuptools entry point, so EVERY package here failed
+#     metadata generation with "ModuleNotFoundError: No module named
+#     'pkg_resources'" and the python phase ended
+#         error: failed: spatialnde2 dataguzzler-python dgpython_param_manager
+#                dgpython-local spatialnde2_ec_functions
+#
+#   * `setup.py develop --uninstall` was removed, and that is what colcon runs
+#     for an ament_python package under --symlink-install. The whole Python half
+#     of ros_ws then fails with
+#         error: option --uninstall not recognized
+#     -- tari_bringup, tari_cv, tari_keyence_sim, msg_sync, april_registration,
+#     dgpython_ros2_mtcserver, tari_yolo_utils -- and aborts everything
+#     downstream of them.
+#
+# 79.x satisfies everything this workspace actually needs from a modern
+# setuptools: the [project] table honoured with a setup.py present (>= 61), and
+# setuptools_scm 8's build backend (>= 64). So the ceiling costs nothing.
+#
+# This is not "downgrading another project's setuptools to build ours": apt's
+# colcon on this distro declares setuptools<80 itself, so a machine above the
+# ceiling is broken for every ROS package on it, not only for this workspace.
+# The repair is still announced out loud rather than done silently.
+SETUPTOOLS_FLOOR=64
+SETUPTOOLS_CEILING=80          # exclusive
+SETUPTOOLS_SCM_FLOOR=8
+
 ensure_build_prereqs() {
     # Ubuntu 22.04 ships setuptools 59.6 and setuptools_scm 6.4.2. 59.6 ignores
     # pyproject.toml's [project] table whenever a setup.py is present, and 6.4.2
     # predates the version_file option that spatialnde2's generated pyproject
     # uses. Both produce confusing failures a long way downstream of the cause.
     #
-    # Only upgrade when the versions are actually too old. On a distro that
-    # marks its Python externally managed (PEP 668 -- Arch, Ubuntu 23.04+) an
-    # unconditional upgrade fails, and it would fail for no reason on the many
-    # systems that are already fine.
+    # Only act when the versions are actually outside the window. On a distro
+    # that marks its Python externally managed (PEP 668 -- Arch, Ubuntu 23.04+)
+    # an unconditional install fails, and it would fail for no reason on the
+    # many systems that are already fine.
     #
     # The probe runs with the same privileges as the install that follows, so it
     # reports the environment that will actually do the building. Root does not
     # see the invoking user's ~/.local, so an unprivileged probe can find a new
     # enough setuptools_scm that the build will never load.
-    if "${SUDO[@]}" "$PY" - <<'PYEOF'
+    #
+    # pkg_resources is probed by IMPORTING it, not by reading a version. The
+    # breakage above is a missing module, and a machine can carry an in-window
+    # setuptools whose pkg_resources files are gone from disk anyway (dpkg still
+    # reports python3-pkg-resources installed; tari.bash's prereqs phase
+    # restores it). A version comparison cannot see that at all.
+    local probe_rc=0
+    "${SUDO[@]}" "$PY" - "$SETUPTOOLS_FLOOR" "$SETUPTOOLS_CEILING" \
+                        "$SETUPTOOLS_SCM_FLOOR" <<'PYEOF' || probe_rc=$?
 import sys
 from importlib.metadata import version, PackageNotFoundError
+
+floor, ceiling, scm_floor = sys.argv[1:4]
 
 def numeric(s):
     out = []
@@ -812,21 +974,54 @@ def numeric(s):
         out.append(int(digits))
     return out
 
-def at_least(names, minimum):
+def found(names):
     for name in names:
         try:
-            return numeric(version(name)) >= numeric(minimum)
+            return numeric(version(name))
         except PackageNotFoundError:
             continue
-    return False
+    return None
 
-sys.exit(0 if at_least(["setuptools"], "64")
-         and at_least(["setuptools_scm", "setuptools-scm"], "8") else 1)
+# Distinct statuses, because the caller says a different thing for each: 1 is
+# "too old, upgrade", 2 is "too new, and here is what that breaks".
+have = found(["setuptools"])
+if have is None or have < numeric(floor):
+    sys.exit(1)
+if have >= numeric(ceiling):
+    sys.exit(2)
+scm = found(["setuptools_scm", "setuptools-scm"])
+if scm is None or scm < numeric(scm_floor):
+    sys.exit(1)
+try:
+    # Every setuptools in the window warns that pkg_resources is deprecated.
+    # The question here is only whether it is THERE, and printing that warning
+    # on every run would be noise in the one place that must stay readable.
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        import pkg_resources  # noqa: F401
+except ImportError:
+    sys.exit(1)
+sys.exit(0)
 PYEOF
-    then
+    if [[ $probe_rc -eq 0 ]]; then
         return 0
     fi
     info "==> build prerequisites"
+    if [[ $probe_rc -eq 2 ]]; then
+        # Say what is being changed and why before changing it. A silent
+        # downgrade of a system-wide build tool is exactly the kind of thing
+        # that costs somebody else a day.
+        local too_new
+        too_new="$("$PY" -c 'from importlib.metadata import version
+print(version("setuptools"))' 2>/dev/null || echo "(unreadable)")"
+        warn "setuptools $too_new is installed and is too NEW for this
+   distribution: apt's colcon-core declares setuptools<80, 'setup.py develop
+   --uninstall' (which colcon runs for every ament_python package under
+   --symlink-install) is gone above it, and pkg_resources -- which /usr/bin/vcs
+   and apt's pbr both import -- is gone with it. Pinning it back below
+   $SETUPTOOLS_CEILING, which is what every build here was verified against."
+    fi
     # Under sudo, into the same environment as everything else, and for the same
     # reason: the package installs below run as root and import these at build
     # time. An unprivileged upgrade would land in the invoking user's ~/.local,
@@ -834,10 +1029,13 @@ PYEOF
     # build would still use the distro's too-old setuptools.
     #
     # These are third-party build tools rather than packages of ours, so --deps
-    # resolution is left alone here: setuptools_scm needs what it needs, and -U
-    # is the point of the call. The prohibition this script enforces is on
-    # editable and per-user installs, neither of which this is.
-    if ! "${SUDO[@]}" "$PY" -m pip install -q -U "setuptools>=64" "setuptools_scm[toml]>=8" wheel; then
+    # resolution is left alone here: setuptools_scm needs what it needs. NOT
+    # -U, and that is the fix: `-U` means "newest that satisfies", and with no
+    # ceiling the newest was 84.0.0. A bounded specifier makes pip move
+    # setuptools INTO the window from either side.
+    if ! "${SUDO[@]}" "$PY" -m pip install -q \
+            "setuptools>=$SETUPTOOLS_FLOOR,<$SETUPTOOLS_CEILING" \
+            "setuptools_scm[toml]>=$SETUPTOOLS_SCM_FLOOR" wheel; then
         die "could not install the build prerequisites.
 
    If pip reported an externally-managed environment (PEP 668), this
@@ -850,6 +1048,20 @@ PYEOF
 
        ./dgpy_install.sh --python /path/to/venv/bin/python
        DGPY_PYTHON=/path/to/venv/bin/python ./dgpy_install.sh"
+    fi
+    # The install above is also the repair for a missing pkg_resources, because
+    # every setuptools in the window still ships it. Confirm that rather than
+    # assume it: a build that goes ahead without it fails five packages later
+    # with a traceback that blames pbr, which is not where anybody would look.
+    if ! "${SUDO[@]}" "$PY" -c 'import pkg_resources' >/dev/null 2>&1; then
+        die "pkg_resources still does not import after installing setuptools.
+
+   Apt reports python3-pkg-resources installed while its files are gone from
+   disk on machines where something ran a system-wide pip upgrade of
+   setuptools. Restore that one package -- it changes nothing else, and leaves
+   whatever is in /usr/local alone:
+
+       sudo apt-get install --reinstall python3-pkg-resources"
     fi
 }
 

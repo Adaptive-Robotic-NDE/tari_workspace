@@ -124,7 +124,7 @@ missing and nothing else — and any one can be run on its own with `--phase`:
 | phase | |
 |---|---|
 | `prereqs` | apt packages, `rosdep init`/`update`, vcstool, colcon, and the Python modules apt cannot supply |
-| `sources` | `vcs import` of the layer chain, in order; `--with-sofa` fetches SOFA here, not in `build` |
+| `sources` | fetches the layer chain's manifests, in order, one repository at a time; `--with-sofa` fetches SOFA here, not in `build` |
 | `rosdep` | `rosdep install` over `ros_ws/src`; checks the vendor SDKs on `hw` |
 | `python` | runs `dgpy_install.sh --with-extras` (a no-op below `acq`) |
 | `build` | one `colcon build --symlink-install` over all of `ros_ws` |
@@ -144,6 +144,33 @@ gave you, then import hw and build again.
 Two more flags worth knowing before the first run: `-n` / `--dry-run` prints the
 whole plan without running any of it, and `--check-remotes` tests every manifest
 URL and exits.
+
+**If `--phase sources` fails, run it again.** It fetches one repository at a
+time, with retries on transient network errors, and skips anything already
+cloned — a repository pinned to a commit it is already sitting on is not even
+contacted. So a re-run only retries what failed. This matters because github
+throttles concurrent SSH connections per address, and the failure it produces
+names neither throttling nor the real cause:
+
+```
+kex_exchange_identification: read: Connection reset by peer
+Connection reset by 140.82.112.3 port 22
+fatal: Could not read from remote repository.
+
+Please make sure you have the correct access rights
+and the repository exists.
+```
+
+The last two lines are wrong — the key is fine. Waiting a minute and re-running
+the phase is the whole fix. A failure that says `Permission denied (publickey)`
+*is* about the key, is not retried, and `./tari.bash --check-remotes` will say
+which repositories it cannot read.
+
+The same phase also **fast-forwards a checkout that already exists**, which
+`vcs import` does not do: a repository cloned last month at `iron` stays at last
+month's commit under `vcs import`, and it reports success. A checkout with
+uncommitted changes, a diverged branch, or an origin that is not the manifest's
+is reported and left exactly as it was.
 
 ---
 
@@ -389,7 +416,7 @@ Expect `31 CMAKE_BUILD_TYPE:STRING=Release` for the full 47 — the rest are
 `ament_python` packages, which have no CMake cache.
 
 **Every dataguzzler package matches its source.** Not `STALE`, `EDITABLE`,
-`USER-SITE`, `BROKEN` or `UNVERSIONED`:
+`USER-SITE`, `LEGACY`, `BROKEN` or `UNVERSIONED`:
 
 ```bash
 cd ~/tari && ./dgpy_install.sh --check
@@ -574,6 +601,23 @@ commit at all. It also reports the two ways the install itself can be wrong rath
 than merely out of date: `EDITABLE`, and `USER-SITE` for a per-user copy shadowing
 the system one. Remove that copy (`pip uninstall <name>`) before reinstalling — a
 reinstall alone would not change what runs.
+
+`LEGACY` is the third, and it is the one that used to be unrecoverable. It means
+the installed copy came from `python3 setup.py install` — typically an older
+install out of `/usr/local/src` — which leaves `<name>.egg-info` metadata and no
+file list. pip will not replace one of those, and says so:
+
+```
+error: uninstall-distutils-installed-package
+× Cannot uninstall dgpython_nidaqmx 0.0.0
+╰─> It is a distutils installed project and thus we cannot accurately determine
+    which files belong to it which would lead to only a partial uninstall.
+```
+
+Re-running changed nothing, because nothing about a re-run moved the thing in the
+way; on one clean-machine bootstrap two modules failed this way on four
+consecutive runs. An install now removes that metadata first, naming the path it
+removed, and then installs normally. Nothing has to be done by hand.
 
 Two more states matter. `ABSENT` means the source is not checked out at all, which
 on a machine that imported only `acq.repos` is the ordinary state of the instrument
@@ -781,8 +825,25 @@ These are things a correct, complete bootstrap still does not give you on Ubuntu
 
 - **`ultralytics` and `lap` are not installed**, so YOLO is skipped in every mode.
   Deliberate: the wheel closure pulls torch, which is gigabytes and its own CUDA
-  decision. Bring-up names it as a `SKIP` with the reason, which is the behaviour
-  to want rather than a fault.
+  decision. Bring-up names it as a `SKIP` whose reason starts with `DELIBERATE:`
+  and ends with the command that enables it, which is the behaviour to want
+  rather than a fault. It is the only `SKIP` a correct `sim`-layer bring-up
+  prints, and the summary line counts it: `17 started, 1 skipped`.
+
+- **setuptools must stay below 80 on Ubuntu 22.04, and the bootstrap holds it
+  there.** This is not a preference. `apt`'s `colcon-core` 0.21.3 declares
+  `setuptools<80,>=30.3.0`; above 80 `setup.py develop --uninstall` is gone,
+  which is what colcon runs for every `ament_python` package under
+  `--symlink-install`, so the whole Python half of `ros_ws` fails with
+  `error: option --uninstall not recognized` and everything downstream of it
+  aborts; and `pkg_resources` goes with it, which breaks `/usr/bin/vcs` and
+  `apt`'s `pbr` — and `pbr` is reached through a setuptools entry point, so
+  *every* package here then fails metadata generation with
+  `ModuleNotFoundError: No module named 'pkg_resources'`. `--phase prereqs`
+  reports a machine that is above the ceiling and `--phase python` pins it back
+  into the 64–79 window. If something else on the machine upgrades it again,
+  all of the above returns at once; `sudo python3 -m pip install
+  'setuptools>=64,<80'` is the repair.
 
 - **`pyquaternion` and `trimesh` come from pip, not apt** — no Ubuntu package and
   no rosdep key exists for either under any spelling, so only `--phase prereqs`

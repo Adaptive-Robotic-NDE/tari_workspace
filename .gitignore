@@ -31,6 +31,11 @@
 !test/test_install_policy.py
 !test/test_script_robustness.py
 !test/test_extension_portability.py
+# These two run real git repositories and real Python in a tmpdir rather than
+# only reading the scripts, but still need no network, no ROS and nothing
+# installed.
+!test/test_sources_resume.py
+!test/test_env_repair.py
 
 
 # --- the container ---------------------------------------------------------

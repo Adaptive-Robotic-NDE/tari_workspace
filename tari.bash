@@ -14,7 +14,7 @@
 # Seven phases, runnable individually with --phase:
 #
 #     prereqs   apt packages, rosdep, vcstool, colcon
-#     sources   vcs import of the layer chain
+#     sources   fetch the layer chain's manifests, one repository at a time
 #     rosdep    rosdep install over ros_ws/src
 #     python    dgpy_install.sh -- spatialnde2 and the dataguzzler modules
 #     build     one colcon build over ros_ws
@@ -94,7 +94,10 @@ warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 run()  { if [[ $DRYRUN -eq 1 ]]; then printf '    + %s\n' "$*"; else eval "$@"; fi; }
 
-usage() { sed -n '3,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; cat <<'EOF'
+# 3,28 is the comment block above and nothing after it. It used to be 3,30,
+# which ran two lines past the block and printed `set -euo pipefail` as part of
+# --help.
+usage() { sed -n '3,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; cat <<'EOF'
 
 Options:
   --layer LAYER      container | sim | acq | hw | site   (required, unless
@@ -106,6 +109,14 @@ Options:
   --check-remotes    test that every manifest URL resolves, then exit
   -n, --dry-run      print what would run
   -h, --help         this message
+
+Environment:
+  TARI_FETCH_ATTEMPTS   tries per repository before the sources phase gives up
+                        on a transient network error (default 5)
+  TARI_FETCH_BACKOFF    seconds before the second try, doubling thereafter
+                        (default 5)
+  TARI_COLCON_WORKERS   override the build phase's --parallel-workers, which
+                        otherwise follows available RAM
 EOF
 }
 
@@ -517,38 +528,83 @@ install_hw_python_prereqs() {
 }
 
 # ---------------------------------------------------------------------------
-# `command -v vcs` is not enough to know vcstool works.
+# pkg_resources, and the setuptools version that decides whether it exists.
 #
-# vcstool's console script still does `from pkg_resources import
-# load_entry_point`, and setuptools dropped pkg_resources in 81. So any
-# `pip install -U setuptools` anywhere on the system leaves /usr/bin/vcs present
-# and broken:
+# ONE BROKEN THING, FOUR SYMPTOMS, none of which names it. A system-wide
+# `pip install -U setuptools` resolves to something at or above 80, writes it
+# into /usr/local/lib/python3.10/dist-packages ahead of apt's 59.6.0 on
+# sys.path, and from that moment this distribution's own tooling is broken:
 #
-#     ModuleNotFoundError: No module named 'pkg_resources'
+#   * /usr/bin/vcs is `from pkg_resources import load_entry_point`, so
+#         ModuleNotFoundError: No module named 'pkg_resources'
+#   * apt's pbr (reached through a setuptools entry point) imports
+#     pkg_resources too, so EVERY package build fails metadata generation --
+#     measured on marvin 2026-09-30, five packages in one run:
+#         error: failed: spatialnde2 dataguzzler-python dgpython_param_manager
+#                dgpython-local spatialnde2_ec_functions
+#   * `setup.py develop --uninstall` is gone above 80, and that is what colcon
+#     runs for an ament_python package under --symlink-install, so the whole
+#     Python half of ros_ws fails with
+#         error: option --uninstall not recognized
+#     and everything downstream of those packages aborts.
+#   * apt's colcon-core declares `setuptools<80,>=30.3.0` outright, and pip
+#     says so inside the very command that installs the offending version.
 #
-# Seen for real on a machine where another project had run
-# `sudo pip3 install setuptools --break-system-packages`: dpkg still reported
-# python3-pkg-resources as installed while all 17 of its files were gone from
-# disk. Reinstalling that one package restores them and does not touch the newer
-# setuptools in /usr/local, which belonged to the other project and had to stay.
+# Checked HERE, in the first phase, because every one of those symptoms shows
+# up in a later phase a long way from its cause. dgpy_install.sh holds the same
+# ceiling for the install it does itself; see SETUPTOOLS_CEILING there.
+#
+# dpkg can also report python3-pkg-resources installed while all 17 of its
+# files are gone from disk -- seen on a machine where another project had run
+# `sudo pip3 install setuptools --break-system-packages`. Reinstalling that one
+# package restores them, removes nothing, and leaves /usr/local alone.
 # ---------------------------------------------------------------------------
-ensure_working_vcs() {
-    command -v vcs >/dev/null || return 0
-    vcs --version >/dev/null 2>&1 && return 0
+SETUPTOOLS_CEILING=80          # exclusive; must match dgpy_install.sh
 
-    warn "vcs is installed but does not run:"
-    vcs --version 2>&1 | sed 's/^/    /' >&2 || true
+ensure_working_vcs() {
+    # 1. pkg_resources has to import. That is the module every symptom above
+    #    actually fails on, so probe it directly rather than through whichever
+    #    tool happens to notice first.
     if ! python3 -c 'import pkg_resources' 2>/dev/null; then
-        note "pkg_resources is missing entirely; restoring python3-pkg-resources"
+        warn "pkg_resources does not import. vcstool, colcon and every package"
+        warn "build here go through it; restoring python3-pkg-resources"
         note "(same version, nothing removed, /usr/local left alone)"
         run "sudo apt-get install -y --reinstall python3-pkg-resources"
+        if ! python3 -c 'import pkg_resources' 2>/dev/null; then
+            warn "pkg_resources STILL does not import, so something on this"
+            warn "machine has a setuptools without it ahead of apt's on"
+            warn "sys.path. See the setuptools note below."
+        fi
     fi
-    if vcs --version >/dev/null 2>&1; then
-        note "vcs works now: $(vcs --version)"
-    else
-        warn "vcs still does not run. phase_sources will clone from the manifests"
-        warn "directly instead, which is equivalent, just slower."
+
+    # 2. setuptools has to be below the ceiling. Reported, not repaired, here:
+    #    this phase is apt's and that package is pip's, so the one place that
+    #    moves it is dgpy_install.sh's ensure_build_prereqs -- which the python
+    #    phase runs, and which pins it into the window from either side.
+    local ver major
+    ver="$(python3 -c 'from importlib.metadata import version
+print(version("setuptools"))' 2>/dev/null || true)"
+    major="${ver%%.*}"
+    if [[ -n "$major" && "$major" =~ ^[0-9]+$ && "$major" -ge $SETUPTOOLS_CEILING ]]; then
+        warn "setuptools $ver is installed, and $SETUPTOOLS_CEILING or newer breaks this"
+        warn "distribution's colcon (no 'setup.py develop --uninstall', so every"
+        warn "ament_python package fails to build) and everything that imports"
+        warn "pkg_resources. The python phase pins it back below $SETUPTOOLS_CEILING. On a"
+        warn "sim-layer machine, which never runs that phase, do it by hand:"
+        warn "    sudo python3 -m pip install 'setuptools>=64,<$SETUPTOOLS_CEILING'"
     fi
+
+    # 3. Only then is it worth asking about vcs itself. The sources phase no
+    #    longer uses it -- see the comment above sync_one_repo for why -- but
+    #    the manifests document `vcs import < sim.repos` for use by hand, so a
+    #    broken /usr/bin/vcs is still a finding.
+    if command -v vcs >/dev/null && ! vcs --version >/dev/null 2>&1; then
+        warn "vcs is installed but does not run:"
+        vcs --version 2>&1 | sed 's/^/    /' >&2 || true
+        warn "The sources phase does not need it -- it fetches with git"
+        warn "directly -- so this does not block a bootstrap."
+    fi
+    return 0
 }
 
 # ===========================================================================
@@ -668,6 +724,7 @@ phase_prereqs() {
     else
         note "rosdep already initialised"
     fi
+    warn_about_dangling_rosdep_sources
     run "rosdep update --rosdistro $ROSDISTRO"
 
     # The Azure Kinect SDK is deliberately NOT installed here; see
@@ -679,56 +736,381 @@ phase_prereqs() {
     fi
 }
 
-# vcstool is an apt package, and --phase prereqs is apt-only. The container
-# layer exists precisely because the host need not be Ubuntu, so requiring apt
-# to obtain it would be circular. A manifest entry is only "clone this URL at
-# this version", so do that directly when vcs is unavailable.
-import_manifest() {
-    local manifest="$1"
-    # `command -v vcs` alone is a trap: the script can exist and still crash on
-    # `from pkg_resources import load_entry_point` (see ensure_working_vcs).
-    # Test that it actually runs, or the fallback below never gets a chance.
-    if command -v vcs >/dev/null && vcs --version >/dev/null 2>&1; then
-        run "vcs import --input '$manifest' '$ROOT'"
-        return
-    fi
-    # NOT `git clone --branch`: a manifest version may be a branch, a tag OR a
-    # commit, and --branch rejects a commit. Clone, then check out whatever it
-    # is. A failure has to fail the phase -- a half-imported workspace that
-    # reports success is worse than one that stops.
-    local path url version rc=0
-    while IFS=$'\t' read -r path url version; do
-        if [[ -d "$ROOT/$path/.git" ]]; then
-            note "$path already present"
-            continue
+# ---------------------------------------------------------------------------
+# `rosdep update`'s six-line ERROR that is not a fault.
+#
+# Every prereqs run in the clean-machine logs ends the rosdep step with this,
+# four times out of four:
+#
+#     ERROR: unable to process source [file:///usr/share/python3-rosdep2/debian.yaml]:
+#         <urlopen error [Errno 2] No such file or directory:
+#         '/usr/share/python3-rosdep2/debian.yaml'>
+#         (file:///usr/share/python3-rosdep2/debian.yaml)
+#     ...
+#     ERROR: Not all sources were able to be updated.
+#
+# It is Debian's own rosdep package, python3-rosdep2, which ships BOTH
+# /etc/ros/rosdep/sources.list.d/30-debian.list and the yaml that list points
+# at. Remove the package without purging its conffile and the pointer outlives
+# its target, so rosdep reports an unreachable source for ever. rosdep still
+# exits 0 and its other sources update normally -- measured in all four runs --
+# so this never stopped anything. It just looks exactly like the thing that
+# would.
+#
+# Reported rather than repaired: the file is a dpkg conffile, and deleting one
+# behind dpkg's back makes the next upgrade of that package ask a question
+# nobody will understand. Naming it in one line is the whole fix.
+# ---------------------------------------------------------------------------
+warn_about_dangling_rosdep_sources() {
+    local dir=/etc/ros/rosdep/sources.list.d
+    [[ -d "$dir" ]] || return 0
+    local listfile target found=0
+    for listfile in "$dir"/*.list; do
+        [[ -f "$listfile" ]] || continue
+        while read -r _kind url _rest; do
+            [[ "${url:-}" == file://* ]] || continue
+            target="${url#file://}"
+            [[ -e "$target" ]] && continue
+            if [[ $found -eq 0 ]]; then
+                warn "rosdep is configured with a local source whose file does not exist."
+                warn "'rosdep update' will print several ERROR lines about it and then"
+                warn "carry on; it still exits 0 and every other source updates. This is"
+                warn "what a half-removed python3-rosdep2 leaves behind. To silence it:"
+                found=1
+            fi
+            warn "    sudo rm $listfile    # points at the missing $target"
+        done < <(grep -v '^[[:space:]]*#' "$listfile" 2>/dev/null || true)
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Fetching the sources: THIS PHASE DOES NOT USE `vcs import`, and the reason is
+# measured rather than stylistic.
+#
+# `vcs import` fans out over its repositories concurrently (10 workers by
+# default) and github.com throttles concurrent SSH connections per source
+# address. On marvin, 2026-09-30, importing hw.repos' nine repositories gave
+# eight simultaneous failures -- the progress line was `E.EEEEEEE`, one dot for
+# the one HTTPS entry -- every one of them:
+#
+#     Could not clone repository
+#     'git@github.com:isuthermography/dgpython-azurekinect_staging.git':
+#     Cloning into '.'...
+#     kex_exchange_identification: read: Connection reset by peer
+#     Connection reset by 140.82.112.3 port 22
+#     fatal: Could not read from remote repository.
+#
+#     Please make sure you have the correct access rights
+#     and the repository exists.
+#
+# followed by `error: hw.repos did not import cleanly (see above)`. The last
+# line of that message is why this is worth so much comment: it reads as a
+# credential or a typo, and it is neither -- the same key cloned the same
+# repositories a minute later. Re-running did not help either, because every
+# repository was attempted again at the same concurrency and throttled again,
+# and because the four dgpython modules had been left as EMPTY DIRECTORIES,
+# which the python phase then reported as
+#
+#     ERROR: Directory '.' is not installable. Neither 'setup.py' nor
+#     'pyproject.toml' found.
+#
+# So: one repository at a time, retry the failures that are transient, and make
+# a re-run cost nothing for everything that already succeeded.
+#
+# THE SECOND REASON is `vcs import`'s behaviour on a checkout that already
+# exists: it does not fast-forward an existing branch. A repository cloned last
+# month at `iron` stays at last month's commit and `vcs import` reports success,
+# so a stale tree is indistinguishable from a current one. Nothing here can
+# detect that later -- the version in the manifest is a branch name, which
+# matches whatever the branch pointed at whenever it was cloned. The loop below
+# fetches and fast-forwards explicitly, and says which of the two happened.
+#
+# Deliberately NOT done: changing a remote URL, touching a dirty working tree,
+# or resetting a branch that has diverged. Several of these checkouts carry
+# work in progress. Each of those cases is reported and left exactly as it was.
+# ---------------------------------------------------------------------------
+# One attempt per transient failure, doubling the wait. Five attempts starting
+# at 5 s spans about 75 s, which is longer than github's throttle window has
+# been observed to last.
+FETCH_ATTEMPTS="${TARI_FETCH_ATTEMPTS:-5}"
+FETCH_BACKOFF="${TARI_FETCH_BACKOFF:-5}"
+
+# Failures worth retrying: a refused or dropped connection, not a refused
+# identity. `Permission denied (publickey)` and `Repository not found` are
+# answers, and repeating the question does not change them -- retrying those
+# would turn a clear credential error into a 75 s pause and then the same clear
+# credential error.
+#
+# The definitive cases are tested FIRST, and that ordering is load-bearing:
+# git's final line is `fatal: Could not read from remote repository.` for both
+# kinds, and the throttled clone even ends with "Please make sure you have the
+# correct access rights and the repository exists." So the decision has to be
+# made on the SPECIFIC line -- kex_exchange_identification / Connection reset
+# on one side, Permission denied / Repository not found on the other -- and
+# never on the summary line, which says the same thing either way.
+fetch_error_is_transient() {
+    local text="$1"
+    # Answers. Not retried, whatever else is in the output.
+    case "$text" in
+        *"Permission denied"*)                        return 1 ;;
+        *"Repository not found"*)                     return 1 ;;
+        *"Host key verification failed"*)             return 1 ;;
+        *"could not read Username"*)                  return 1 ;;
+        *"terminal prompts disabled"*)                return 1 ;;
+        *"Invalid username or password"*)             return 1 ;;
+    esac
+    # Dropped or refused connections.
+    case "$text" in
+        *kex_exchange_identification*|*ssh_exchange_identification*) return 0 ;;
+        *"Connection reset by"*|*"Connection closed by"*)            return 0 ;;
+        *"Connection timed out"*|*"Operation timed out"*)             return 0 ;;
+        *"Connection refused"*)                                       return 0 ;;
+        *"The remote end hung up unexpectedly"*|*"early EOF"*)        return 0 ;;
+        *"RPC failed"*|*"HTTP 429"*|*"rate limit"*)                   return 0 ;;
+        *"Temporary failure in name resolution"*)                     return 0 ;;
+    esac
+    return 1
+}
+
+# Run a git command, retrying transient network failures. Output is captured so
+# it can be classified, and printed either way -- indented, so a failure that
+# is going to be retried does not look like the end of the story.
+git_with_retry() {
+    local what="$1"; shift
+    local attempt=1 delay="$FETCH_BACKOFF" out rc
+    while :; do
+        rc=0
+        out="$("$@" 2>&1)" || rc=$?
+        if [[ $rc -eq 0 ]]; then
+            [[ -n "$out" ]] && printf '        %s\n' "$out"
+            return 0
         fi
-        if ! run "git clone --quiet '$url' '$ROOT/$path'"; then
-            warn "clone failed: $path"; rc=1; continue
+        printf '        %s\n' "$out" >&2
+        if [[ $attempt -ge $FETCH_ATTEMPTS ]] || ! fetch_error_is_transient "$out"; then
+            return "$rc"
         fi
-        if ! run "git -C '$ROOT/$path' checkout --quiet '$version'"; then
-            warn "no such version '$version' in $path"; rc=1; continue
-        fi
-        note "$path at $version"
-    done < <(python3 - "$manifest" <<'PYEOF'
+        warn "$what: attempt $attempt of $FETCH_ATTEMPTS failed on a transient"
+        warn "network error; waiting ${delay}s and trying again"
+        sleep "$delay"
+        attempt=$(( attempt + 1 ))
+        delay=$(( delay * 2 ))
+    done
+}
+
+manifest_entries() {
+    python3 - "$1" <<'PYEOF'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1])) or {}
 for path, spec in (d.get("repositories") or {}).items():
     print("%s\t%s\t%s" % (path, spec["url"], spec["version"]))
 PYEOF
-)
+}
+
+# A manifest version is a branch, a tag OR a commit, which is why this cannot
+# just be `git clone --branch` (that rejects a commit) or `git pull` (that is
+# wrong for a tag and for a commit). True when the string can only be a commit.
+version_is_a_commit() {
+    [[ "$1" =~ ^[0-9a-f]{7,40}$ ]]
+}
+
+# FETCH_* counters, so the phase can print one honest summary line.
+FETCH_CLONED=0
+FETCH_FORWARDED=0
+FETCH_CURRENT=0
+FETCH_LEFT_ALONE=0
+
+sync_one_repo() {
+    local path="$1" url="$2" version="$3"
+    local dest="$ROOT/$path" head target remote
+
+    if [[ $DRYRUN -eq 1 ]]; then
+        if [[ ! -d "$dest/.git" ]]; then
+            note "+ clone $url -> $path at $version"
+        elif version_is_a_commit "$version" \
+             && [[ "$(git -C "$dest" rev-parse HEAD 2>/dev/null || true)" == "$version"* ]]; then
+            # The case that makes a re-run cheap. Say so in the plan too, or a
+            # dry run describes 26 network operations where the real run does
+            # a handful.
+            note "+ nothing: $path is already at the pinned $version"
+        else
+            note "+ fetch and fast-forward $path to $version"
+        fi
+        return 0
+    fi
+
+    # A directory with no .git in it is what a failed clone leaves behind. An
+    # empty one is debris and is removed; anything else might be somebody's
+    # work and is not this script's to delete.
+    if [[ -e "$dest" && ! -d "$dest/.git" ]]; then
+        if [[ -d "$dest" ]] && rmdir "$dest" 2>/dev/null; then
+            note "$path: removed the empty directory a failed clone left behind"
+        else
+            warn "$path exists and is not a git checkout. Left alone -- move it"
+            warn "aside and run this phase again."
+            FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
+            return 1
+        fi
+    fi
+
+    # ---- not there yet: clone -------------------------------------------
+    # Into a temporary sibling, then move. A clone interrupted partway leaves
+    # nothing at the real path, so "the directory exists" and "the repository
+    # was fetched" stay the same statement and a re-run resumes cleanly.
+    if [[ ! -d "$dest/.git" ]]; then
+        local staging="$dest.tari-incoming"
+        rm -rf "$staging"
+        mkdir -p "$(dirname "$dest")"
+        if ! git_with_retry "$path" git clone --quiet "$url" "$staging"; then
+            rm -rf "$staging"
+            warn "clone failed: $path ($url)"
+            return 1
+        fi
+        if ! git_with_retry "$path" git -C "$staging" checkout --quiet "$version"; then
+            rm -rf "$staging"
+            warn "no such version '$version' in $path"
+            return 1
+        fi
+        mv "$staging" "$dest"
+        note "$path cloned at $version"
+        FETCH_CLONED=$(( FETCH_CLONED + 1 ))
+        return 0
+    fi
+
+    # ---- already there: resume ------------------------------------------
+    remote="$(git -C "$dest" remote get-url origin 2>/dev/null || true)"
+    if [[ -n "$remote" && "$remote" != "$url" ]]; then
+        warn "$path has origin $remote, not the manifest's $url."
+        warn "Left exactly as it is -- this script does not move a remote."
+        FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
+        return 0
+    fi
+
+    head="$(git -C "$dest" rev-parse HEAD 2>/dev/null || true)"
+
+    # A pinned commit cannot move, so a checkout already sitting on it needs no
+    # network at all. This is most of the workspace on a re-run, and it is what
+    # makes a resumed fetch cheap rather than merely correct.
+    if version_is_a_commit "$version" && [[ "$head" == "$version"* ]]; then
+        note "$path at $version already"
+        FETCH_CURRENT=$(( FETCH_CURRENT + 1 ))
+        return 0
+    fi
+
+    # Uncommitted work: report it and do not fetch over it. Several of these
+    # checkouts have work in progress at any given time.
+    if [[ -n "$(git -C "$dest" status --porcelain 2>/dev/null)" ]]; then
+        warn "$path has uncommitted changes; not fetching over them."
+        FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
+        return 0
+    fi
+
+    if ! git_with_retry "$path" git -C "$dest" fetch --quiet --tags origin; then
+        warn "fetch failed: $path"
+        return 1
+    fi
+
+    # Resolve the manifest version against what was just fetched: a branch
+    # first (as its remote-tracking ref, which is the thing that moved), then a
+    # tag, then a bare commit.
+    if git -C "$dest" rev-parse --verify --quiet "refs/remotes/origin/$version" >/dev/null; then
+        target="refs/remotes/origin/$version"
+    elif git -C "$dest" rev-parse --verify --quiet "refs/tags/$version" >/dev/null; then
+        target="refs/tags/$version"
+    elif git -C "$dest" rev-parse --verify --quiet "$version^{commit}" >/dev/null; then
+        target="$version"
+    else
+        warn "no such version '$version' in $path after fetching"
+        return 1
+    fi
+
+    local target_sha
+    target_sha="$(git -C "$dest" rev-parse "$target^{commit}")"
+    if [[ "$head" == "$target_sha" ]]; then
+        note "$path at $version already"
+        FETCH_CURRENT=$(( FETCH_CURRENT + 1 ))
+        return 0
+    fi
+
+    # THE CASE `vcs import` DOES NOT HANDLE. On the branch the manifest names,
+    # fast-forward it -- --ff-only rather than a reset, so a branch that has
+    # diverged (a local commit, a rebase) refuses loudly instead of losing it.
+    local branch
+    branch="$(git -C "$dest" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    if [[ -n "$branch" && "$branch" == "$version" ]]; then
+        if ! git -C "$dest" merge --ff-only --quiet "$target_sha" 2>/dev/null; then
+            warn "$path is on '$branch' and cannot be fast-forwarded to"
+            warn "${target_sha:0:12} -- it has diverged from origin. Left alone;"
+            warn "reconcile it by hand (git -C $path log --oneline origin/$version..HEAD)."
+            FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
+            return 0
+        fi
+        note "$path fast-forwarded to ${target_sha:0:12} ($version)"
+        FETCH_FORWARDED=$(( FETCH_FORWARDED + 1 ))
+        return 0
+    fi
+
+    # Not on that branch: a tag, a pinned commit, or a detached HEAD left by an
+    # earlier `vcs import`. Check the version out directly.
+    if ! git -C "$dest" checkout --quiet "$version"; then
+        warn "could not check out '$version' in $path"
+        return 1
+    fi
+    # And then CONFIRM, because checking out a branch name does not have to
+    # land on what was fetched: `git checkout iron` prefers an existing local
+    # branch `iron`, which may be months behind origin/iron. Reporting
+    # "checked out at $version" there would be exactly the stale-tree lie this
+    # whole function exists to stop.
+    head="$(git -C "$dest" rev-parse HEAD)"
+    if [[ "$head" != "$target_sha" ]]; then
+        if ! git -C "$dest" merge --ff-only --quiet "$target_sha" 2>/dev/null; then
+            warn "$path: a local '$version' exists and cannot be fast-forwarded"
+            warn "to ${target_sha:0:12}; it has diverged. It is checked out as it"
+            warn "stands at ${head:0:12} -- reconcile it by hand."
+            FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
+            return 0
+        fi
+    fi
+    note "$path checked out at $version (${target_sha:0:12})"
+    FETCH_FORWARDED=$(( FETCH_FORWARDED + 1 ))
+    return 0
+}
+
+import_manifest() {
+    local manifest="$1"
+    local path url version rc=0
+    [[ -f "$manifest" ]] || { warn "no such manifest: $manifest"; return 1; }
+    while IFS=$'\t' read -r path url version; do
+        [[ -n "$path" ]] || continue
+        sync_one_repo "$path" "$url" "$version" || rc=1
+    done < <(manifest_entries "$manifest")
     return $rc
 }
 
 phase_sources() {
     say "Sources"
-    command -v vcs >/dev/null \
-        || note "vcstool not found; cloning from the manifests directly"
     mkdir -p "$WS/src"
+    local rc=0
     for l in $(layer_chain "$LAYER"); do
         note "importing $l.repos"
-        import_manifest "$ROOT/$l.repos" \
-            || fatal_unless_dry "$l.repos did not import cleanly (see above)"
+        import_manifest "$ROOT/$l.repos" || rc=1
     done
+
+    if [[ $DRYRUN -eq 0 ]]; then
+        note "$FETCH_CLONED cloned, $FETCH_FORWARDED updated, $FETCH_CURRENT already current, $FETCH_LEFT_ALONE left alone"
+    fi
+    if [[ $rc -ne 0 ]]; then
+        # Say that re-running is the recovery, because with `vcs import` it was
+        # not: every repository was re-attempted and re-throttled. Now a repo
+        # that cloned is skipped without touching the network at all.
+        warn "some repositories did not fetch (see above). RUN THIS PHASE AGAIN:
+   everything already cloned is skipped, so a re-run only retries what failed.
+   If the failures were 'kex_exchange_identification' or 'Connection reset',
+   that is github throttling connections and waiting a minute is the fix. If
+   they were 'Permission denied (publickey)', the key is the problem and
+   ./tari.bash --check-remotes will say which repositories it cannot read."
+        fatal_unless_dry "sources did not import cleanly (see above)"
+    fi
 
     if [[ $WITH_TEST_DATA -eq 1 ]]; then
         install_test_data
@@ -933,24 +1315,88 @@ EOF
 # Found for real on a lab machine where another project had pip-installed
 # PyQt6 6.11.0 system-wide. Warn, and name the packages, rather than removing
 # anything: on a shared machine the copy may belong to somebody else.
+#
+# TWO SHAPES, and the second one has no metadata at all. `pip uninstall PyQt5`
+# that was interrupted, or a `pip install` over an apt copy, leaves the
+# PACKAGE DIRECTORY in /usr/local/lib/python3.10/dist-packages with its
+# .dist-info gone. importlib.metadata then reports nothing while the directory
+# still precedes apt's on sys.path, so the shadow is complete and invisible to
+# a distribution scan. That is the one the servo operator hit on 2026-09-30:
+#
+#     ImportError: .../PyQt5/QtCore.abi3.so: undefined symbol: _ZdaPvm
+#
+# raised out of `import spatialnde2`, and the fix was by hand --
+# `sudo rm -rf /usr/local/lib/python3.10/dist-packages/PyQt5*
+# /usr/local/lib/python3.10/dist-packages/pyqt5_plugins*`. So look for the
+# directories too, and print the removal command for each case, because
+# `pip uninstall` cannot remove an orphaned directory it has no record of.
 # ---------------------------------------------------------------------------
 warn_about_pip_qt() {
     local found
     found="$(python3 - <<'PYEOF' 2>/dev/null
 import os
+import site
+import sys
 from importlib.metadata import distributions
-interesting = ("pyqt5", "pyqt6", "pyside2", "pyside6", "qtpy",
+
+INTERESTING = ("pyqt5", "pyqt6", "pyside2", "pyside6", "qtpy",
                "shiboken2", "shiboken6", "opencv-python")
+
+# /usr/lib/python3/dist-packages is where apt puts things -- that is the system
+# Qt and it is the one we want. Everything else on sys.path shadows it.
+def is_apt(path):
+    return os.path.realpath(path).startswith("/usr/lib/python3/")
+
+def interesting(name):
+    return any(name.lower().startswith(k) for k in INTERESTING)
+
+# Every top-level importable name that SOME installed distribution claims, per
+# site directory. Built first, because it is what separates "pip installed
+# this and can remove it" from an orphaned directory pip has no record of.
+claimed = {}
+for dist in distributions():
+    location = os.path.realpath(str(dist.locate_file("")))
+    names = claimed.setdefault(location, set())
+    top = dist.read_text("top_level.txt")
+    if top:
+        names.update(line.strip() for line in top.splitlines() if line.strip())
+    for f in (dist.files or []):
+        parts = str(f).split("/")
+        if parts and not parts[0].startswith(".."):
+            names.add(parts[0].split(".")[0])
+
 for dist in distributions():
     name = (dist.metadata["Name"] or "")
-    if not any(name.lower().startswith(k) for k in interesting):
+    if not interesting(name):
         continue
     location = os.path.realpath(str(dist.locate_file("")))
-    # /usr/lib/python3/dist-packages is where apt puts things -- that is the
-    # system Qt and it is the one we want.
-    if location.startswith("/usr/lib/python3/"):
+    if is_apt(location):
         continue
-    print("%s %s (%s)" % (name, dist.version, location))
+    print("%s %s (%s)\n        remove with: sudo %s -m pip uninstall %s"
+          % (name, dist.version, location, sys.executable, name))
+
+# The orphans: a package directory with a Qt name that NO distribution claims.
+# `pip uninstall` cannot touch one of these -- it has no record of it -- so the
+# only honest instruction is the path to remove. Metadata directories
+# (.dist-info, .egg-info) are not packages and are never reported here.
+site_dirs = list(site.getsitepackages())
+user_site = site.getusersitepackages()
+if user_site:
+    site_dirs.append(user_site)
+for directory in dict.fromkeys(os.path.realpath(d) for d in site_dirs):
+    if not os.path.isdir(directory) or is_apt(directory):
+        continue
+    owned = claimed.get(directory, set())
+    for entry in sorted(os.listdir(directory)):
+        if entry.endswith((".dist-info", ".egg-info", ".egg-link", ".pth")):
+            continue
+        if not interesting(entry) or entry in owned:
+            continue
+        path = os.path.join(directory, entry)
+        if not os.path.isdir(path):
+            continue
+        print("%s -- NO metadata, so pip cannot see or remove it\n"
+              "        remove with: sudo rm -rf %s" % (entry, path))
 PYEOF
 )"
     [[ -z "$found" ]] && return 0
@@ -958,9 +1404,10 @@ PYEOF
     printf '    %s\n' "$found" >&2
     warn "spatialnde2 links the SYSTEM Qt (qtbase5-dev, python3-pyqt5). A pip Qt"
     warn "ships its own Qt runtime and sip module and can be selected instead at"
-    warn "import time, which produces crashes rather than a clean error. If these"
-    warn "belong to no project on this machine, remove them before building:"
-    warn "    sudo python3 -m pip uninstall <name> ..."
+    warn "import time, which produces crashes rather than a clean error -- most"
+    warn "often 'undefined symbol: _ZdaPvm' out of PyQt5/QtCore.abi3.so during"
+    warn "'import spatialnde2'. If these belong to no project on this machine,"
+    warn "remove them with the command printed beside each one before building."
 }
 
 phase_python() {
