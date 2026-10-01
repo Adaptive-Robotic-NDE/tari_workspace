@@ -56,8 +56,16 @@ repositories:
   # from sim.repos
   ros_ws/src/noether:
     type: git
-    url: https://github.com/ros-industrial/noether.git
-    version: e64b330e13cdc181f983d27094427df9ad98188c
+    # tari/iron = upstream e64b330 (tag 0.16.0) + the min/max fix in
+    # getDistancesToMinMaxCuts, where the two comparisons were chained with
+    # `else if` so a corner that raised d_max could not also lower d_min --
+    # feed the OBB corners in ascending order and d_min keeps its DBL_MAX
+    # initialiser, which is what the plane count is computed from. Latent on
+    # every mesh measured so far, and it fires once on a mesh whose corners
+    # happen to arrive sorted.
+    # upstream: https://github.com/ros-industrial/noether.git (master)
+    url: git@github.com:Adaptive-Robotic-NDE/noether_staging.git
+    version: tari/iron
   # from sim.repos
   ros_ws/src/boost_plugin_loader:
     type: git
