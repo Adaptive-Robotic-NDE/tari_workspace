@@ -38,6 +38,16 @@ WITH_SOFA=0
 WITH_TEST_DATA=0
 DRYRUN=0
 DO_CHECK_REMOTES=0
+#: Bring every checkout to exactly what the manifest says, including moving a
+#: remote and abandoning local commits. Off by default: the sources phase is
+#: deliberately conservative, because several of these checkouts have work in
+#: progress at any given time and silently resetting one would be the worst
+#: thing this script could do.
+RESYNC=0
+#: ...and also throw away uncommitted changes. Separate from --resync on
+#: purpose: a moved remote or a diverged branch is recoverable from the reflog,
+#: and an uncommitted edit is not recoverable from anywhere.
+DISCARD_LOCAL=0
 
 ALL_PHASES=(prereqs sources rosdep python build env verify)
 
@@ -107,6 +117,19 @@ Options:
   --with-test-data   also clone the recorded scan fixtures the suites use
                      (~95 MB over git-lfs; without it those sections skip)
   --check-remotes    test that every manifest URL resolves, then exit
+  --resync           force every checkout to exactly what the manifest says:
+                     move a remote that points somewhere else, switch branch,
+                     and hard-reset a branch that has diverged. REFUSES a
+                     checkout with uncommitted changes. Discarded commits stay
+                     in that repository's reflog, and their hashes are printed.
+                     This is what to use after a manifest changes a repository's
+                     url or version -- without it those are reported and left
+                     alone, which is right for a development machine and wrong
+                     for a cell that just needs to match.
+  --discard-local-changes
+                     with --resync, also throw away uncommitted changes
+                     (reset --hard plus clean -fd; ignored files are kept).
+                     Nothing recovers these. Implies --resync.
   -n, --dry-run      print what would run
   -h, --help         this message
 
@@ -127,6 +150,11 @@ while [[ $# -gt 0 ]]; do
         --with-sofa)     WITH_SOFA=1 ;;
         --with-test-data) WITH_TEST_DATA=1 ;;
         --check-remotes) DO_CHECK_REMOTES=1 ;;
+        --resync)        RESYNC=1 ;;
+        --discard-local-changes)
+                         # Implies --resync: discarding edits in order to leave
+                         # the checkout where it already was makes no sense.
+                         DISCARD_LOCAL=1; RESYNC=1 ;;
         -n|--dry-run)    DRYRUN=1 ;;
         -h|--help)       usage; exit 0 ;;
         *)               die "unknown option: $1 (try --help)" ;;
@@ -919,6 +947,32 @@ FETCH_CLONED=0
 FETCH_FORWARDED=0
 FETCH_CURRENT=0
 FETCH_LEFT_ALONE=0
+FETCH_RESYNCED=0
+
+# Hard-reset a checkout onto the manifest's version, saying what that costs.
+#
+# Only ever called under --resync. The point of printing the hashes is that a
+# discarded commit is not gone: it stays reachable through that repository's
+# reflog for ninety days, so `git -C <path> reflog` or a cherry-pick by hash
+# gets it back. A resync that printed nothing would make local work look as
+# though it had never existed.
+resync_hard() {
+    local dest="$1" path="$2" target_sha="$3" version="$4" upstream="$5"
+    local extra
+    extra="$(git -C "$dest" log --oneline "$upstream..HEAD" 2>/dev/null || true)"
+    if [[ -n "$extra" ]]; then
+        warn "$path: DISCARDING $(printf '%s\n' "$extra" | wc -l | tr -d ' ') local commit(s)"
+        warn "to reach $version. Recoverable with: git -C $path reflog"
+        printf '%s\n' "$extra" | sed 's/^/     /' >&2
+    fi
+    if ! git -C "$dest" reset --hard --quiet "$target_sha" 2>/dev/null; then
+        warn "$path: could not reset to ${target_sha:0:12}"
+        return 1
+    fi
+    note "$path force-resynced to ${target_sha:0:12} ($version)"
+    FETCH_RESYNCED=$(( FETCH_RESYNCED + 1 ))
+    return 0
+}
 
 sync_one_repo() {
     local path="$1" url="$2" version="$3"
@@ -980,10 +1034,23 @@ sync_one_repo() {
     # ---- already there: resume ------------------------------------------
     remote="$(git -C "$dest" remote get-url origin 2>/dev/null || true)"
     if [[ -n "$remote" && "$remote" != "$url" ]]; then
-        warn "$path has origin $remote, not the manifest's $url."
-        warn "Left exactly as it is -- this script does not move a remote."
-        FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
-        return 0
+        if [[ $RESYNC -eq 0 ]]; then
+            warn "$path has origin $remote, not the manifest's $url."
+            warn "Left exactly as it is -- this script does not move a remote"
+            warn "unless you ask. --resync moves it."
+            FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
+            return 0
+        fi
+        # THE CASE A MANIFEST CHANGE CREATES. When a third-party repository
+        # acquires a local patch it moves to our own fork, and every existing
+        # checkout is then pointing at the upstream it came from -- which is
+        # exactly the situation where "report and leave alone" means the cell
+        # quietly keeps running unpatched code.
+        note "$path: origin $remote -> $url"
+        if ! git -C "$dest" remote set-url origin "$url"; then
+            warn "$path: could not move origin to $url"
+            return 1
+        fi
     fi
 
     head="$(git -C "$dest" rev-parse HEAD 2>/dev/null || true)"
@@ -999,10 +1066,32 @@ sync_one_repo() {
 
     # Uncommitted work: report it and do not fetch over it. Several of these
     # checkouts have work in progress at any given time.
+    #
+    # --resync DOES NOT override this, and that is the one asymmetry in these
+    # flags worth stating out loud: a moved remote and a discarded commit are
+    # both recoverable -- the commit sits in the reflog for ninety days and its
+    # hash is printed below -- while an uncommitted edit is recoverable from
+    # nowhere at all. So it takes its own flag.
     if [[ -n "$(git -C "$dest" status --porcelain 2>/dev/null)" ]]; then
-        warn "$path has uncommitted changes; not fetching over them."
-        FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
-        return 0
+        if [[ $DISCARD_LOCAL -eq 0 ]]; then
+            warn "$path has uncommitted changes; not fetching over them."
+            if [[ $RESYNC -eq 1 ]]; then
+                warn "--resync does NOT discard these. Commit or stash them, or pass"
+                warn "--discard-local-changes as well if they are genuinely disposable."
+            fi
+            FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
+            return 0
+        fi
+        warn "$path: DISCARDING uncommitted changes --"
+        git -C "$dest" status --porcelain 2>/dev/null | sed 's/^/     /' >&2 || true
+        # clean -fd, deliberately not -fdx: ignored files are build products and
+        # generated version stamps, and removing those turns a source resync
+        # into a rebuild of everything downstream.
+        if ! git -C "$dest" reset --hard --quiet 2>/dev/null \
+             || ! git -C "$dest" clean -fdq 2>/dev/null; then
+            warn "$path: could not discard local changes"
+            return 1
+        fi
     fi
 
     if ! git_with_retry "$path" git -C "$dest" fetch --quiet --tags origin; then
@@ -1039,9 +1128,14 @@ sync_one_repo() {
     branch="$(git -C "$dest" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
     if [[ -n "$branch" && "$branch" == "$version" ]]; then
         if ! git -C "$dest" merge --ff-only --quiet "$target_sha" 2>/dev/null; then
+            if [[ $RESYNC -eq 1 ]]; then
+                resync_hard "$dest" "$path" "$target_sha" "$version" "$target_sha" || return 1
+                return 0
+            fi
             warn "$path is on '$branch' and cannot be fast-forwarded to"
             warn "${target_sha:0:12} -- it has diverged from origin. Left alone;"
-            warn "reconcile it by hand (git -C $path log --oneline origin/$version..HEAD)."
+            warn "reconcile it by hand (git -C $path log --oneline origin/$version..HEAD),"
+            warn "or pass --resync to force it to the manifest."
             FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
             return 0
         fi
@@ -1053,6 +1147,16 @@ sync_one_repo() {
     # Not on that branch: a tag, a pinned commit, or a detached HEAD left by an
     # earlier `vcs import`. Check the version out directly.
     if ! git -C "$dest" checkout --quiet "$version"; then
+        if [[ $RESYNC -eq 1 ]]; then
+            # A branch that does not exist locally yet -- the manifest moved a
+            # repository onto a new branch name, which is what happens the
+            # first time a third-party checkout becomes our fork.
+            if git -C "$dest" checkout --quiet -B "$version" "$target_sha"; then
+                note "$path force-resynced to ${target_sha:0:12} ($version, new local branch)"
+                FETCH_RESYNCED=$(( FETCH_RESYNCED + 1 ))
+                return 0
+            fi
+        fi
         warn "could not check out '$version' in $path"
         return 1
     fi
@@ -1064,9 +1168,13 @@ sync_one_repo() {
     head="$(git -C "$dest" rev-parse HEAD)"
     if [[ "$head" != "$target_sha" ]]; then
         if ! git -C "$dest" merge --ff-only --quiet "$target_sha" 2>/dev/null; then
+            if [[ $RESYNC -eq 1 ]]; then
+                resync_hard "$dest" "$path" "$target_sha" "$version" "$target_sha" || return 1
+                return 0
+            fi
             warn "$path: a local '$version' exists and cannot be fast-forwarded"
             warn "to ${target_sha:0:12}; it has diverged. It is checked out as it"
-            warn "stands at ${head:0:12} -- reconcile it by hand."
+            warn "stands at ${head:0:12} -- reconcile it by hand, or pass --resync."
             FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
             return 0
         fi
@@ -1097,7 +1205,13 @@ phase_sources() {
     done
 
     if [[ $DRYRUN -eq 0 ]]; then
-        note "$FETCH_CLONED cloned, $FETCH_FORWARDED updated, $FETCH_CURRENT already current, $FETCH_LEFT_ALONE left alone"
+        note "$FETCH_CLONED cloned, $FETCH_FORWARDED updated, $FETCH_CURRENT already current, $FETCH_RESYNCED force-resynced, $FETCH_LEFT_ALONE left alone"
+        if [[ $FETCH_LEFT_ALONE -gt 0 && $RESYNC -eq 0 ]]; then
+            warn "$FETCH_LEFT_ALONE repository/repositories were LEFT ALONE and did not"
+            warn "update. Read the warnings above: a moved remote or a diverged branch"
+            warn "is reported, never silently reconciled. --resync forces them to the"
+            warn "manifest; --resync --discard-local-changes also drops uncommitted work."
+        fi
     fi
     if [[ $rc -ne 0 ]]; then
         # Say that re-running is the recovery, because with `vcs import` it was

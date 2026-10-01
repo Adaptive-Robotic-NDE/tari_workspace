@@ -86,13 +86,14 @@ def workspace(tmp_path, repos):
     return root
 
 
-def run_sources(root, extra_env=None, expect_ok=True):
+def run_sources(root, extra_env=None, expect_ok=True, args=()):
     env = dict(os.environ)
     # No real waiting: the backoff is what is being exercised, not the clock.
     env["TARI_FETCH_BACKOFF"] = "0"
     env.update(extra_env or {})
     result = subprocess.run(
-        [str(root / "tari.bash"), "--layer", "container", "--phase", "sources"],
+        [str(root / "tari.bash"), "--layer", "container", "--phase", "sources",
+         *args],
         cwd=str(root), capture_output=True, text=True, env=env, timeout=300,
     )
     if expect_ok:
@@ -421,3 +422,149 @@ def test_a_detached_head_with_a_stale_local_branch_is_brought_current(tmp_path):
     moved = commit_more(str(origin), "two")
     second = run_sources(root)
     assert git(local, "rev-parse", "HEAD") == moved, second.stdout + second.stderr
+
+
+# ---------------------------------------------------------------------------
+# 4. --resync. The defect it answers: "report and leave alone" is right on a
+#    development machine and wrong on a cell that just needs to match the
+#    manifest -- and the way it is wrong is silent. A manifest that moves a
+#    repository to a new url and branch, which is what happens the first time a
+#    third-party checkout acquires a local patch and becomes our fork, leaves
+#    every existing checkout quietly running the unpatched code.
+# ---------------------------------------------------------------------------
+def test_resync_moves_a_foreign_origin(tmp_path):
+    origin = tmp_path / "origin"
+    other = tmp_path / "other"
+    make_origin(str(origin))
+    make_origin(str(other))
+    root = workspace(tmp_path, {"repo": (str(origin), "iron")})
+    run_sources(root)
+    git(str(root / "repo"), "remote", "set-url", "origin", str(other))
+
+    second = run_sources(root, args=("--resync",))
+    assert git(str(root / "repo"), "remote", "get-url", "origin") == str(origin)
+    assert "force-resynced" in second.stdout + second.stderr \
+        or "already" in second.stdout + second.stderr
+
+
+def test_resync_switches_to_a_branch_that_does_not_exist_locally(tmp_path):
+    """The noether case: the manifest changes BOTH the url and the branch.
+
+    Without --resync this is reported twice over -- foreign origin first, and a
+    missing branch after -- and the checkout keeps the code it had.
+    """
+    upstream = tmp_path / "upstream"
+    fork = tmp_path / "fork"
+    make_origin(str(upstream), branch="master")
+    make_origin(str(fork), branch="master")
+    git(str(fork), "checkout", "-b", "tari/iron")
+    patched = commit_more(str(fork), "our patch")
+
+    root = workspace(tmp_path, {"repo": (str(upstream), "master")})
+    run_sources(root)
+    assert git(str(root / "repo"), "rev-parse", "HEAD") != patched
+
+    # The manifest now names the fork and its branch.
+    manifest = root / "container.repos"
+    manifest.write_text(
+        "repositories:\n  repo:\n    type: git\n    url: %s\n    version: tari/iron\n"
+        % (str(fork),), encoding="utf-8")
+
+    second = run_sources(root, args=("--resync",))
+    assert git(str(root / "repo"), "rev-parse", "HEAD") == patched, \
+        "the checkout did not reach the fork's patched branch"
+    assert git(str(root / "repo"), "remote", "get-url", "origin") == str(fork)
+    assert "force-resynced" in second.stdout + second.stderr
+
+
+def test_resync_resets_a_diverged_branch_and_names_what_it_discarded(tmp_path):
+    """A discarded commit must be printed, because it is recoverable by hash."""
+    origin = tmp_path / "origin"
+    make_origin(str(origin))
+    root = workspace(tmp_path, {"repo": (str(origin), "iron")})
+    run_sources(root)
+
+    local = str(root / "repo")
+    git(local, "config", "user.email", "test@example.invalid")
+    git(local, "config", "user.name", "Test")
+    mine = commit_more(local, "local work")
+    theirs = commit_more(str(origin), "upstream work")
+
+    second = run_sources(root, args=("--resync",))
+    out = second.stdout + second.stderr
+    assert git(local, "rev-parse", "HEAD") == theirs
+    assert "DISCARDING" in out
+    assert mine[:7] in out, "the discarded commit's hash was not printed"
+    assert "reflog" in out, "nothing told the operator how to get it back"
+    # And it really is recoverable, which is what makes printing it worth it.
+    assert mine in git(local, "reflog", "--format=%H")
+
+
+def test_resync_alone_refuses_to_discard_uncommitted_work(tmp_path):
+    """THE ONE ASYMMETRY. A commit survives in the reflog; an edit does not.
+
+    So --resync overrides a moved remote and a diverged branch, and stops at an
+    uncommitted change until it is told otherwise in as many words.
+    """
+    origin = tmp_path / "origin"
+    make_origin(str(origin))
+    root = workspace(tmp_path, {"repo": (str(origin), "iron")})
+    run_sources(root)
+    with open(str(root / "repo" / "README"), "a", encoding="utf-8") as handle:
+        handle.write("work in progress\n")
+    commit_more(str(origin), "two")
+
+    second = run_sources(root, args=("--resync",))
+    out = second.stdout + second.stderr
+    assert "uncommitted changes" in out
+    assert "does NOT discard" in out
+    assert "--discard-local-changes" in out, "it did not say what would"
+    assert "work in progress" in (root / "repo" / "README").read_text()
+
+
+def test_discard_local_changes_does_discard_them(tmp_path):
+    origin = tmp_path / "origin"
+    make_origin(str(origin))
+    root = workspace(tmp_path, {"repo": (str(origin), "iron")})
+    run_sources(root)
+    with open(str(root / "repo" / "README"), "a", encoding="utf-8") as handle:
+        handle.write("work in progress\n")
+    (root / "repo" / "untracked.txt").write_text("junk", encoding="utf-8")
+    theirs = commit_more(str(origin), "two")
+
+    second = run_sources(root, args=("--resync", "--discard-local-changes"))
+    out = second.stdout + second.stderr
+    assert "DISCARDING uncommitted changes" in out
+    assert "work in progress" not in (root / "repo" / "README").read_text()
+    assert not (root / "repo" / "untracked.txt").exists()
+    assert git(str(root / "repo"), "rev-parse", "HEAD") == theirs
+
+
+def test_discard_local_changes_implies_resync(tmp_path):
+    """Discarding edits to leave the checkout where it was makes no sense."""
+    origin = tmp_path / "origin"
+    other = tmp_path / "other"
+    make_origin(str(origin))
+    make_origin(str(other))
+    root = workspace(tmp_path, {"repo": (str(origin), "iron")})
+    run_sources(root)
+    git(str(root / "repo"), "remote", "set-url", "origin", str(other))
+
+    run_sources(root, args=("--discard-local-changes",))
+    assert git(str(root / "repo"), "remote", "get-url", "origin") == str(origin)
+
+
+def test_without_resync_a_left_alone_repo_is_summarised_loudly(tmp_path):
+    """The silence is the fault. A skipped repository must not read as success."""
+    origin = tmp_path / "origin"
+    other = tmp_path / "other"
+    make_origin(str(origin))
+    make_origin(str(other))
+    root = workspace(tmp_path, {"repo": (str(origin), "iron")})
+    run_sources(root)
+    git(str(root / "repo"), "remote", "set-url", "origin", str(other))
+
+    second = run_sources(root)
+    out = second.stdout + second.stderr
+    assert "LEFT ALONE" in out
+    assert "--resync" in out, "the summary did not say what would fix it"

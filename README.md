@@ -172,6 +172,54 @@ month's commit under `vcs import`, and it reports success. A checkout with
 uncommitted changes, a diverged branch, or an origin that is not the manifest's
 is reported and left exactly as it was.
 
+### Bringing an existing machine up to the manifest: `--resync`
+
+"Reported and left alone" is right on a development machine, where those
+checkouts carry work in progress, and wrong on a cell that simply needs to match
+what the manifests now say. To force it:
+
+```bash
+git pull --ff-only          # the manifests live here, so this comes first
+./tari.bash --layer site --resync
+```
+
+That is the whole update. `--resync` moves a remote that points somewhere else,
+switches branch, and hard-resets a branch that has diverged; the other phases
+are idempotent, so the same command then reinstalls whatever the python layer is
+missing and runs one colcon build over what changed.
+
+**It is needed whenever a manifest changes a repository's `url` or `version`**,
+and without it nothing goes wrong loudly. That case is real: a third-party
+repository that acquires a local patch moves to our own fork on a `tari/iron`
+branch — `industrial_reconstruction`, `yolo_ros`, and `noether` since the
+`getDistancesToMinMaxCuts` fix — and every machine that cloned it beforehand is
+pointing at the upstream it came from. A plain `--phase sources` reports that and
+keeps the unpatched code.
+
+**`--resync` does not discard uncommitted changes.** It stops at them and says
+so. The asymmetry is deliberate: a moved remote costs nothing to redo, a
+discarded commit stays in that repository's reflog for ninety days and its hash
+is printed so it can be recovered, and an uncommitted edit is recoverable from
+nowhere at all. To override that as well:
+
+```bash
+./tari.bash --layer site --resync --discard-local-changes
+```
+
+which adds `reset --hard` and `clean -fd` per repository, printing the file list
+first. Ignored files are kept, so build products survive and the rebuild stays
+incremental. `--discard-local-changes` implies `--resync`.
+
+Read the one-line summary either way:
+
+```
+26 cloned, 3 updated, 21 already current, 1 force-resynced, 0 left alone
+```
+
+Anything in **left alone** did not update. Without `--resync` that line is
+followed by a warning saying so, because a skipped repository must not read as
+success.
+
 ---
 
 ## Copy-paste bootstrap
