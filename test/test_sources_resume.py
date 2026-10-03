@@ -523,6 +523,12 @@ def test_resync_alone_refuses_to_discard_uncommitted_work(tmp_path):
 
 
 def test_discard_local_changes_does_discard_them(tmp_path):
+    """...with --yes. A REAL edit takes both flags; see test_line_endings.py.
+
+    The second flag was added after the first cell run, where 224 line-ending
+    diffs and whatever real edits were among them were discarded together
+    because nothing distinguished them.
+    """
     origin = tmp_path / "origin"
     make_origin(str(origin))
     root = workspace(tmp_path, {"repo": (str(origin), "iron")})
@@ -532,9 +538,16 @@ def test_discard_local_changes_does_discard_them(tmp_path):
     (root / "repo" / "untracked.txt").write_text("junk", encoding="utf-8")
     theirs = commit_more(str(origin), "two")
 
-    second = run_sources(root, args=("--resync", "--discard-local-changes"))
+    refused = run_sources(root, args=("--resync", "--discard-local-changes"))
+    out = refused.stdout + refused.stderr
+    assert "REAL content changes" in out
+    assert "--yes" in out, "it did not say what would discard them"
+    assert "work in progress" in (root / "repo" / "README").read_text()
+
+    second = run_sources(root,
+                         args=("--resync", "--discard-local-changes", "--yes"))
     out = second.stdout + second.stderr
-    assert "DISCARDING uncommitted changes" in out
+    assert "DISCARDING real uncommitted changes" in out
     assert "work in progress" not in (root / "repo" / "README").read_text()
     assert not (root / "repo" / "untracked.txt").exists()
     assert git(str(root / "repo"), "rev-parse", "HEAD") == theirs
@@ -568,3 +581,66 @@ def test_without_resync_a_left_alone_repo_is_summarised_loudly(tmp_path):
     out = second.stdout + second.stderr
     assert "LEFT ALONE" in out
     assert "--resync" in out, "the summary did not say what would fix it"
+
+
+# ---------------------------------------------------------------------------
+# 6. A submodule pointer, which `reset --hard` does not fix.
+#
+# The cell log shows moveit_task_constructor reported as having uncommitted
+# changes, discarded under --discard-local-changes, and then reported again
+# with the same single entry on the very next invocation:
+#
+#     warning: ros_ws/src/moveit_task_constructor: DISCARDING uncommitted
+#              changes --
+#           M core/python/pybind11
+#
+# That is a submodule whose HEAD is not the commit the superproject records,
+# and `git reset --hard` does not recurse into one -- measured: the pointer is
+# still dirty immediately after the reset, and `git submodule update --init
+# --recursive` is what clears it. So the old code could never finish: it warned
+# about "uncommitted changes" that were not changes, every run, for ever.
+# ---------------------------------------------------------------------------
+def make_origin_with_submodule(path, inner, branch="iron"):
+    """An origin carrying a submodule, plus the submodule's two commits."""
+    make_origin(inner, branch=branch)
+    first = git(inner, "rev-parse", "HEAD")
+    second = commit_more(inner, "inner two")
+
+    make_origin(path, branch=branch)
+    git(path, "-c", "protocol.file.allow=always",
+        "submodule", "add", "--quiet", inner, "sub")
+    git(path, "commit", "--quiet", "-m", "add sub")
+    return first, second
+
+
+def test_a_submodule_pointer_is_named_as_one_and_is_actually_repaired(tmp_path):
+    inner = tmp_path / "inner"
+    origin = tmp_path / "origin"
+    old, _current = make_origin_with_submodule(str(origin), str(inner))
+
+    root = workspace(tmp_path, {"repo": (str(origin), "iron")})
+    run_sources(root)
+    local = str(root / "repo")
+    # A clone does not carry the origin's protocol.file.allow, and the
+    # submodule's URL here is a local path. Nothing to do with the behaviour
+    # under test; the real manifests use https and ssh.
+    git(local, "config", "protocol.file.allow", "always")
+    git(local, "-c", "protocol.file.allow=always",
+        "submodule", "update", "--init", "--quiet")
+    git(os.path.join(local, "sub"), "checkout", "--quiet", old)
+    assert git(local, "status", "--porcelain"), "bad fixture"
+
+    reported = run_sources(root, args=("--resync",))
+    out = reported.stdout + reported.stderr
+    # The warning wraps, so match within one of its lines.
+    assert "only a submodule pointer" in out, out
+    assert "submodule update --init --recursive" in out, "no remedy offered"
+    assert "has uncommitted changes" not in out, (
+        "a moved submodule pointer is still being called uncommitted changes")
+
+    fixed = run_sources(root, args=("--resync", "--discard-local-changes"))
+    out = fixed.stdout + fixed.stderr
+    assert "restoring the recorded submodule pointer" in out, out
+    assert not git(local, "status", "--porcelain"), (
+        "the checkout is still dirty after the discard, so the next run will "
+        "report the same pointer again -- which is the defect")

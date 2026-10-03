@@ -739,6 +739,48 @@ PYEOF
 INTERPRETER_HAS_STDLIB_DISTUTILS=0
 interpreter_has_stdlib_distutils && INTERPRETER_HAS_STDLIB_DISTUTILS=1
 
+# ---------------------------------------------------------------------------
+# `sudo pip install .` makes git run as root over somebody else's checkout.
+#
+# Every package here is versioned by setuptools_scm, which shells out to git.
+# The install is under sudo by policy, so that git is root -- and on the cell
+# the workspace lives in labuser's home, which root does not own either. git's
+# CVE-2022-24765 guard then refuses:
+#
+#     fatal: detected dubious ownership in repository at
+#            '/home/labuser/tari/dgpython-opencv-camera'
+#     git introspection failed: fatal: detected dubious ownership ...
+#     error: subprocess-exited-with-error / metadata-generation-failed
+#
+# which took out two packages on the first cell run -- the only hard failure in
+# that phase -- and reads as a build error rather than an ownership one.
+#
+# The reflex fix is `sudo git config --global --add safe.directory "*"`, which
+# is what was done there. It is permanent, machine-wide, applies to root, and
+# declares every repository on the box trusted in order to get past one
+# bootstrap. GIT_CONFIG_COUNT/KEY/VALUE is the same setting for ONE directory
+# and ONE command: nothing is written to any config file, and it is gone when
+# pip exits. sudo's env_reset drops it unless it is passed explicitly, which is
+# exactly what the `env` splice below already does for the build variables.
+#
+# Both the source root and the directory pip is run from are listed, because
+# for spatialnde2 those differ (pip runs from its cmake build directory) and
+# setuptools_scm walks up from wherever it starts.
+# ---------------------------------------------------------------------------
+git_safe_env_for() {
+    local dir="$1" n=0 d seen=""
+    for d in "$ROOT/$dir" "$(pip_source_dir "$dir")" "$ROOT"; do
+        # pip_source_dir is the source root for everything except spatialnde2,
+        # so without this most packages would list the same path twice.
+        case "$seen" in *"|$d|"*) continue ;; esac
+        seen="$seen|$d|"
+        printf 'GIT_CONFIG_KEY_%d=safe.directory\n' "$n"
+        printf 'GIT_CONFIG_VALUE_%d=%s\n' "$n" "$d"
+        n=$(( n + 1 ))
+    done
+    printf 'GIT_CONFIG_COUNT=%d\n' "$n"
+}
+
 # The environment assignments that apply to this package ON THIS INTERPRETER.
 build_env_for() {
     local dir="$1" assignment out=()
@@ -749,6 +791,13 @@ build_env_for() {
         fi
         out+=("$assignment")
     done
+    # Unconditional, for every package: see git_safe_env_for above. It is only
+    # ever needed when the install is privileged, and SUDO is empty when this
+    # script is already root -- but a root-owned workspace read by root is the
+    # same refusal, so it goes on either way.
+    while IFS= read -r assignment; do
+        out+=("$assignment")
+    done < <(git_safe_env_for "$dir")
     printf '%s\n' "${out[@]:-}"
 }
 

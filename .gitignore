@@ -13,6 +13,12 @@
 
 # --- the bootstrap itself --------------------------------------------------
 !.gitignore
+# Line endings, pinned to LF. These trees reach the cell by hand copy from a
+# Windows workstation, and one such copy arrived with 224 .py files rewritten
+# to CRLF -- every one of which then read as an uncommitted change. It has to
+# be TRACKED to travel with the bootstrap, which this whitelist would otherwise
+# prevent.
+!.gitattributes
 !README.md
 !tari.bash
 !dgpy_install.sh
@@ -31,11 +37,14 @@
 !test/test_install_policy.py
 !test/test_script_robustness.py
 !test/test_extension_portability.py
-# These two run real git repositories and real Python in a tmpdir rather than
-# only reading the scripts, but still need no network, no ROS and nothing
-# installed.
+!test/test_sourcing_uniformity.py
+# These run real git repositories, real Python and real file modes in a tmpdir
+# rather than only reading the scripts, but still need no network, no ROS and
+# nothing installed.
 !test/test_sources_resume.py
 !test/test_env_repair.py
+!test/test_line_endings.py
+!test/test_shared_workspace.py
 
 
 # --- the container ---------------------------------------------------------

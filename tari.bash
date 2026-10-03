@@ -28,6 +28,41 @@
 #
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# A SHARED WORKSPACE, DRIVEN BY WHICHEVER HUMAN IS LOGGED IN.
+#
+# The robot runs as an unprivileged shared account (`labuser` on the cell), so
+# the workspace lives in that account's home -- but labuser has no sudo, and
+# almost every phase here needs it. So the person who runs this script is a
+# NAMED account with sudo, operating on a tree that another account owns and
+# that the whole `labusers` group has to be able to rewrite tomorrow.
+#
+# The group half of that is already arranged on the cell: the directories carry
+# the setgid bit, so anything created inside them inherits the group. What
+# setgid DOES NOT do is make the file group-WRITABLE -- that comes from the
+# creating process's umask, and the default 022 produces
+#
+#     -rw-r--r--  lesthatj labusers   package.dsv
+#
+# which the next person in the group cannot write, truncate or chmod. Only the
+# owner can chmod a file, so nothing short of root repairs it afterwards. That
+# is the whole of the "setgid causes its own set of issues" problem, and it is
+# what the first cell run died of: ros_ws/build and ros_ws/install were full of
+# another account's 0644 files, and the build came apart into two hundred lines
+# of
+#
+#     CMake Error ... (configure_file): Operation not permitted
+#     PermissionError: [Errno 13] ... install/csf_loader_msgs/.../package.dsv
+#
+# none of which says "someone else owns this file". 0002 is therefore not a
+# preference: with setgid directories it is the other half of the mechanism,
+# and without it the sticky group buys nothing at all. It costs nothing on a
+# single-user machine, where the primary group is the user's own.
+#
+# TARI_UMASK overrides, for a machine that really does want 022.
+# ---------------------------------------------------------------------------
+umask "${TARI_UMASK:-0002}"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS="$ROOT/ros_ws"
 ROSDISTRO="${ROSDISTRO:-iron}"
@@ -48,6 +83,10 @@ RESYNC=0
 #: purpose: a moved remote or a diverged branch is recoverable from the reflog,
 #: and an uncommitted edit is not recoverable from anywhere.
 DISCARD_LOCAL=0
+#: Required in addition to --discard-local-changes before anything with REAL
+#: content changes is reset. Cosmetic dirt -- line endings, a mode bit, a
+#: submodule pointer -- does not need it; see classify_dirty.
+ASSUME_YES=0
 
 ALL_PHASES=(prereqs sources rosdep python build env verify)
 
@@ -104,6 +143,54 @@ warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 run()  { if [[ $DRYRUN -eq 1 ]]; then printf '    + %s\n' "$*"; else eval "$@"; fi; }
 
+# ---------------------------------------------------------------------------
+# `apt-get update` exits 0 with an index it failed to refresh.
+#
+# The cell machine carries a dozen third-party apt sources belonging to other
+# projects, and one of them -- librealsense -- has an expired signing key:
+#
+#     W: GPG error: https://librealsense.intel.com/Debian/apt-repo jammy
+#        InRelease: ... NO_PUBKEY FB0B24895113F120
+#     W: Some index files failed to download. They have been ignored, or old
+#        ones used instead.
+#
+# apt still exits 0, so `run "sudo apt-get update"` reports success, and the
+# three lines that matter scroll past inside several hundred lines of progress
+# bars. "old ones used instead" is the part worth catching: the next
+# `apt-get install` then resolves against a stale index, and whatever that gets
+# wrong surfaces as a missing package somewhere else entirely.
+#
+# Not repaired here. Importing somebody else's signing key, or disabling their
+# repository, is a decision about a machine shared with other projects and is
+# not this script's to make -- but a sourced failure is named once, with the
+# command, instead of being left in the noise.
+# ---------------------------------------------------------------------------
+apt_update() {
+    if [[ $DRYRUN -eq 1 ]]; then
+        printf '    + %s\n' "sudo apt-get update"
+        return 0
+    fi
+    local out rc=0
+    out="$(sudo apt-get update 2>&1)" || rc=$?
+    printf '%s\n' "$out"
+    [[ $rc -eq 0 ]] || return $rc
+
+    local failed keys
+    failed="$(printf '%s\n' "$out" | grep -E '^(W|E): (Failed to fetch|The repository)' || true)"
+    [[ -n "$failed" ]] || return 0
+    warn "apt could not refresh every source, and used the OLD index for those:"
+    printf '%s\n' "$failed" | sed 's/^/    /' >&2
+    keys="$(printf '%s\n' "$out" | grep -oE 'NO_PUBKEY [0-9A-F]{8,}' | awk '{print $2}' | sort -u || true)"
+    if [[ -n "$keys" ]]; then
+        warn "A missing signing key is the cause. If that repository belongs to a"
+        warn "project on this machine, import its key; if it belongs to none,"
+        warn "remove its file from /etc/apt/sources.list.d. Keys seen:"
+        printf '%s\n' "$keys" | sed 's/^/    /' >&2
+    fi
+    warn "Everything below resolves against a stale index for those sources."
+    return 0
+}
+
 # 3,28 is the comment block above and nothing after it. It used to be 3,30,
 # which ran two lines past the block and printed `set -euo pipefail` as part of
 # --help.
@@ -130,7 +217,14 @@ Options:
                      with --resync, also throw away uncommitted changes
                      (reset --hard plus clean -fd; ignored files are kept).
                      Nothing recovers these. Implies --resync.
-  -n, --dry-run      print what would run
+                     COSMETIC dirt -- CRLF line endings, a mode bit, a
+                     submodule pointer -- is discarded on this flag alone and
+                     named as cosmetic. A checkout with real content changes
+                     additionally needs --yes, so a genuine edit cannot be
+                     thrown away buried in two hundred line-ending diffs.
+  --yes              do not stop for real content changes under
+                     --discard-local-changes. Nothing recovers them.
+  -n, --dry-run      print what would run; writes nothing, installs nothing
   -h, --help         this message
 
 Environment:
@@ -140,6 +234,8 @@ Environment:
                         (default 5)
   TARI_COLCON_WORKERS   override the build phase's --parallel-workers, which
                         otherwise follows available RAM
+  TARI_UMASK            umask for everything this script creates (default
+                        0002, so the labusers group can rewrite it tomorrow)
 EOF
 }
 
@@ -155,6 +251,7 @@ while [[ $# -gt 0 ]]; do
                          # Implies --resync: discarding edits in order to leave
                          # the checkout where it already was makes no sense.
                          DISCARD_LOCAL=1; RESYNC=1 ;;
+        --yes)           ASSUME_YES=1 ;;
         -n|--dry-run)    DRYRUN=1 ;;
         -h|--help)       usage; exit 0 ;;
         *)               die "unknown option: $1 (try --help)" ;;
@@ -180,6 +277,178 @@ layer_at_least() {  # layer_at_least acq  -> true when LAYER is acq, hw or site
     local want="$1" l
     for l in $(layer_chain "$LAYER"); do [[ "$l" == "$want" ]] && return 0; done
     return 1
+}
+
+# ---------------------------------------------------------------------------
+# The paths every manifest in the layer chain names, one per line. Used by the
+# safe.directory export below and nowhere else yet; kept here rather than
+# inside phase_sources because the ownership preamble runs before any phase.
+# ---------------------------------------------------------------------------
+layer_manifest_paths() {
+    local l
+    for l in $(layer_chain "$LAYER"); do
+        [[ -f "$ROOT/$l.repos" ]] || continue
+        manifest_entries "$ROOT/$l.repos" | cut -f1
+    done
+}
+
+# ---------------------------------------------------------------------------
+# git refuses to touch a repository somebody else owns.
+#
+#     fatal: detected dubious ownership in repository at
+#            '/home/labuser/tari/dgpython-opencv-camera'
+#
+# which is CVE-2022-24765's fix doing its job: the workspace is in labuser's
+# home and git is running as lesthatj, or (worse) as root under `sudo pip`.
+# That is exactly how the first cell run lost its python phase -- two packages'
+# setup.py call setuptools_scm, setuptools_scm shells out to git, git was root,
+# and the build died with "git introspection failed" and
+# `error: metadata-generation-failed`.
+#
+# The reflex is `sudo git config --global --add safe.directory "*"`, which is
+# what was done on the cell and is the wrong shape of fix: it is permanent, it
+# is machine-wide, it applies to root, and it says every repository on the box
+# is trusted for ever in order to get past one bootstrap.
+#
+# GIT_CONFIG_COUNT/KEY/VALUE is the same setting scoped to this process tree.
+# It writes nothing into anybody's ~/.gitconfig, it lists ONLY the checkouts
+# this workspace's own manifests name, and it is gone when the script exits.
+# (git >= 2.31 for the environment form; jammy carries 2.34.)
+#
+# An existing GIT_CONFIG_COUNT is respected rather than clobbered: the entries
+# are appended after whatever the caller already set.
+# ---------------------------------------------------------------------------
+export_workspace_safe_directories() {
+    local -a dirs=("$ROOT")
+    local d i
+    while IFS= read -r d; do
+        [[ -n "$d" ]] && dirs+=("$ROOT/$d")
+    done < <(layer_manifest_paths)
+
+    i="${GIT_CONFIG_COUNT:-0}"
+    [[ "$i" =~ ^[0-9]+$ ]] || i=0
+    for d in "${dirs[@]}"; do
+        export "GIT_CONFIG_KEY_$i=safe.directory"
+        export "GIT_CONFIG_VALUE_$i=$d"
+        i=$(( i + 1 ))
+    done
+    export GIT_CONFIG_COUNT="$i"
+    # The sudo'd steps are a separate problem: sudo runs with env_reset and
+    # drops all of these. dgpy_install.sh re-adds them for the package it is
+    # installing; see git_safe_env_for there.
+}
+
+# ---------------------------------------------------------------------------
+# Somebody else's 0644 files in ros_ws/build and ros_ws/install.
+#
+# This is the failure the umask note at the top of the file describes, seen
+# from the other end: the artefacts are already there, already owned by another
+# account, and already not group-writable, so no umask fixes them now. What a
+# build does with them is unreadable --
+#
+#     CMake Error at .../CMakePackageConfigHelpers.cmake:344 (configure_file):
+#       Operation not permitted
+#
+# because cmake writes the file and then copies its timestamps, and utime() on
+# a file you do not own is EPERM rather than EACCES. Seven packages failed and
+# seventeen aborted behind them on the first cell run, and not one line of the
+# output named ownership.
+#
+# So ask the question directly, before the build phase spends four minutes
+# arriving at it: is there anything under build/ or install/ that this account
+# cannot write? `find -writable` tests access(W_OK), which is false both for a
+# foreign-owned 0644 file and for a mode-0444 one, and -print -quit stops at
+# the first hit so the check costs nothing on a healthy tree.
+#
+# Reported with the remedy and then fatal, rather than repaired: the choice
+# between "delete the artefacts" and "chgrp the artefacts" is the operator's,
+# and the second one needs a privilege this function cannot assume it has.
+# ---------------------------------------------------------------------------
+assert_workspace_artefacts_writable() {
+    local d hit
+    for d in "$WS/build" "$WS/install" "$WS/log"; do
+        [[ -d "$d" ]] || continue
+        # Regular files and directories only. -writable calls access(), which
+        # FOLLOWS a symlink, so a dangling one answers "not writable" -- and
+        # --symlink-install fills these trees with symlinks, several of which
+        # point at a container path that does not exist on the host. -type
+        # uses lstat, so naming the two types skips every link. (Measured on
+        # lablinux: without this the check fired on
+        # build/keyence_interfaces/.../keyence_interfaces -> /home/user/...)
+        hit="$(find "$d" \( -type f -o -type d \) ! -writable -print -quit 2>/dev/null || true)"
+        [[ -n "$hit" ]] || continue
+        warn "$d holds files this account cannot write. The first one is:"
+        warn "    $(ls -ld "$hit" 2>/dev/null || echo "$hit")"
+        warn "On a shared workspace that is the setgid bit without the umask:"
+        warn "another account built here with umask 022, so its files are 0644"
+        warn "and only their owner can chmod them. colcon reports this as"
+        warn "'Operation not permitted' from configure_file and as a"
+        warn "PermissionError on package.dsv, naming neither ownership nor the"
+        warn "account. Pick one:"
+        warn "    rm -rf '$WS/build' '$WS/install' '$WS/log'   # a clean rebuild"
+        warn "    sudo chgrp -R labusers '$WS' && sudo chmod -R g+rwX '$WS'"
+        # fatal_unless_dry dies outside --dry-run, so reaching the next line at
+        # all means this is a dry run, whose whole purpose is to describe a
+        # machine that is not set up yet. Returning non-zero here would make
+        # `--dry-run` exit 1 under `set -e` and print none of the rest.
+        fatal_unless_dry "ros_ws artefacts are not writable by $(id -un) (see above)"
+        return 0
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# THE POLICY, checked rather than assumed, and only where it applies.
+#
+# A workspace driven by several named accounts needs all three of:
+#
+#   1. one group everybody is in                     (labusers)
+#   2. setgid on the directories, so new files inherit it
+#   3. a umask that leaves group write on            (0002, set at the top)
+#
+# Two out of three is the state the cell was in, and it looks like it is
+# working right up to the moment a second person builds. So say so -- but only
+# on a workspace that is actually shared, which is what more than one owner
+# among its top-level entries means. On a single-user machine, where the
+# primary group is the user's own, none of this is a finding and the function
+# is silent.
+#
+# A warning, not fatal: arranging a group is an administrative act, the script
+# cannot do it without privileges it should not assume, and a workspace that is
+# merely awkward still builds for whoever owns it.
+# ---------------------------------------------------------------------------
+warn_about_shared_workspace_policy() {
+    local owners
+    owners="$( { find "$ROOT" -maxdepth 1 -mindepth 1 -printf '%u\n'
+                 [[ -d "$WS/src" ]] && find "$WS/src" -maxdepth 1 -mindepth 1 -printf '%u\n'
+                 true; } 2>/dev/null | sort -u | tr '\n' ' ' || true)"
+    # One owner: not shared, nothing to say. Two or more means two people have
+    # already written here, and then the mode bits decide whether a third can.
+    [[ "$(wc -w <<<"$owners")" -ge 2 ]] || return 0
+
+    local mode group
+    mode="$(stat -c '%a' "$ROOT" 2>/dev/null || echo '')"
+    group="$(stat -c '%G' "$ROOT" 2>/dev/null || echo '?')"
+    note "shared workspace: owners are $owners(group $group)"
+    local -a complaints=()
+    [[ "${#mode}" -eq 4 && "${mode:0:1}" =~ [2367] ]] \
+        || complaints+=("the setgid bit is not set, so a new file does not inherit group $group")
+    [[ "${mode: -2:1}" =~ [2367] ]] \
+        || complaints+=("the group cannot write it (mode $mode)")
+    [[ ${#complaints[@]} -gt 0 ]] || return 0
+
+    warn "This workspace is written by more than one account ($owners)"
+    warn "and its shared-access arrangement is incomplete:"
+    local c
+    for c in "${complaints[@]}"; do warn "    $c"; done
+    warn "Everything this script creates is group-writable (umask $(umask)),"
+    warn "but that only helps where the group is right. Arrange it once:"
+    warn "    sudo chgrp -R labusers '$ROOT'"
+    warn "    sudo find '$ROOT' -type d -exec chmod g+rwxs {} +"
+    warn "    sudo find '$ROOT' -type f -exec chmod g+rw {} +"
+    warn "and have every account that drives this set 'umask 0002' in its own"
+    warn "shell startup file, or the next 022 build recreates the problem."
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -288,7 +557,7 @@ ensure_ros_apt_repo() {
         return 0
     fi
     say "ROS 2 apt repository (upstream ros2-apt-source)"
-    run "sudo apt-get update"
+    apt_update
     run "sudo apt-get install -y --no-remove curl ca-certificates gnupg"
 
     if [[ $DRYRUN -ne 0 ]]; then
@@ -309,7 +578,7 @@ ensure_ros_apt_repo() {
          'https://github.com/ros-infrastructure/ros-apt-source/releases/download/${version}/ros2-apt-source_${version}.${codename}_all.deb'"
     run "sudo dpkg -i '$deb'"
     run "rm -f '$deb'"
-    run "sudo apt-get update"
+    apt_update
 }
 
 # ---------------------------------------------------------------------------
@@ -605,21 +874,58 @@ ensure_working_vcs() {
         fi
     fi
 
-    # 2. setuptools has to be below the ceiling. Reported, not repaired, here:
-    #    this phase is apt's and that package is pip's, so the one place that
-    #    moves it is dgpy_install.sh's ensure_build_prereqs -- which the python
-    #    phase runs, and which pins it into the window from either side.
-    local ver major
-    ver="$(python3 -c 'from importlib.metadata import version
-print(version("setuptools"))' 2>/dev/null || true)"
+    # 2. setuptools has to be below the ceiling -- and the WHERE matters as much
+    #    as the version, which is what the first cell run proved.
+    #
+    #    That machine carried setuptools 84.0.0 in
+    #    /home/lesthatj/.local/lib/python3.10/site-packages: the invoking
+    #    human's per-user site directory. The python phase duly ran
+    #    `sudo pip install 'setuptools>=64,<80'`, which writes
+    #    /usr/local/lib/python3.10/dist-packages -- and the user site precedes
+    #    that on sys.path, so the pin could not take effect and never did. The
+    #    warning fired again on the next invocation, and the colcon build that
+    #    followed still loaded setuptools out of ~/.local (visible in its own
+    #    stderr: ".local/lib/python3.10/site-packages/setuptools/_distutils").
+    #    So the old text, "The python phase pins it back", was a claim the run
+    #    disproved.
+    #
+    #    On a shared machine this is worse than one stale install: the version
+    #    that wins depends on WHICH HUMAN ran the script, so the same workspace
+    #    builds for one account and not for another, and `sudo pip` cannot
+    #    reach either copy. Report the location and print the command that
+    #    matches it.
+    local ver major loc
+    read -r ver loc <<<"$(python3 - <<'PYEOF' 2>/dev/null || true
+import os
+from importlib.metadata import distribution
+d = distribution("setuptools")
+print(d.version, os.path.realpath(str(d.locate_file(""))))
+PYEOF
+)"
     major="${ver%%.*}"
     if [[ -n "$major" && "$major" =~ ^[0-9]+$ && "$major" -ge $SETUPTOOLS_CEILING ]]; then
         warn "setuptools $ver is installed, and $SETUPTOOLS_CEILING or newer breaks this"
         warn "distribution's colcon (no 'setup.py develop --uninstall', so every"
-        warn "ament_python package fails to build) and everything that imports"
-        warn "pkg_resources. The python phase pins it back below $SETUPTOOLS_CEILING. On a"
-        warn "sim-layer machine, which never runs that phase, do it by hand:"
-        warn "    sudo python3 -m pip install 'setuptools>=64,<$SETUPTOOLS_CEILING'"
+        warn "ament_python package fails to build under --symlink-install) and"
+        warn "everything that imports pkg_resources."
+        warn "    it is at: ${loc:-unknown}"
+        case "${loc:-}" in
+            "$HOME"/*)
+                warn "That is YOUR OWN per-user site directory, which precedes every"
+                warn "system directory on sys.path -- so the python phase's"
+                warn "'sudo pip install' CANNOT displace it and will not try."
+                warn "Remove it, as yourself and WITHOUT sudo:"
+                warn "    python3 -m pip uninstall -y setuptools"
+                warn "    python3 -c 'import setuptools; print(setuptools.__file__)'"
+                warn "On a shared machine do this for every account that runs builds:"
+                warn "whichever ~/.local wins is whoever is logged in."
+                ;;
+            *)
+                warn "The python phase pins it back below $SETUPTOOLS_CEILING. On a sim-layer"
+                warn "machine, which never runs that phase, do it by hand:"
+                warn "    sudo python3 -m pip install 'setuptools>=64,<$SETUPTOOLS_CEILING'"
+                ;;
+        esac
     fi
 
     # 3. Only then is it worth asking about vcs itself. The sources phase no
@@ -631,6 +937,39 @@ print(version("setuptools"))' 2>/dev/null || true)"
         vcs --version 2>&1 | sed 's/^/    /' >&2 || true
         warn "The sources phase does not need it -- it fetches with git"
         warn "directly -- so this does not block a bootstrap."
+    fi
+
+    # 4. pytest has to import, for a reason that is nothing to do with running
+    #    the suites here.
+    #
+    #    python3-pytest is in the apt list above, and the first cell run
+    #    installed it -- and the build that followed still said, eleven times,
+    #
+    #        CMake Warning at .../ament_add_pytest_test.cmake:82 (message):
+    #          The Python module 'pytest' was not found, pytests cannot be run.
+    #          On Linux, install the 'python3-pytest' package.
+    #
+    #    on a machine where that package was already the newest version.
+    #    ament_cmake_pytest probes the interpreter cmake found, so this is a
+    #    statement about THAT interpreter's sys.path, and that machine had a
+    #    private ~/.local ahead of the system directories (see the setuptools
+    #    note above, same directory, same account).
+    #
+    #    The consequence is quiet and bad: those eleven packages configure with
+    #    no tests registered at all, so `colcon test` afterwards passes having
+    #    run nothing. The advice apt's own message gives -- install
+    #    python3-pytest -- is already done, which is exactly why it has to be
+    #    said differently here.
+    if ! python3 -c 'import pytest' 2>/dev/null; then
+        warn "pytest does not import for $(command -v python3):"
+        python3 -c 'import pytest' 2>&1 | tail -3 | sed 's/^/    /' >&2 || true
+        warn "python3-pytest is installed by this phase, so this is about what"
+        warn "is ahead of it on sys.path rather than about a missing package."
+        warn "Every ament package then configures with NO tests registered --"
+        warn "'The Python module pytest was not found' -- and a later"
+        warn "'colcon test' passes having run nothing. Check whose copy wins:"
+        warn "    python3 -c 'import sys; print(sys.path)'"
+        warn "    ls ~/.local/lib/python3.*/site-packages"
     fi
     return 0
 }
@@ -718,7 +1057,7 @@ phase_prereqs() {
     # repository has to exist first. --no-remove on every install: apt is never
     # allowed to solve a dependency by taking something off this machine.
     ensure_ros_apt_repo
-    run "sudo apt-get update"
+    apt_update
     run "sudo apt-get install -y --no-remove ${pkgs[*]}"
     ensure_working_vcs
     install_pip_prereqs
@@ -926,12 +1265,21 @@ git_with_retry() {
     done
 }
 
+# A manifest edited on Windows, or copied through an SFTP client in text mode,
+# arrives with CRLF line endings and possibly a byte-order mark. PyYAML copes
+# with both -- \r\n is a YAML line break and the BOM is consumed by the reader,
+# measured against 22.04's python3-yaml 5.4.1 -- so neither corrupts the
+# parse. What WOULD survive is a stray \r inside a scalar, which would then be
+# appended to a branch name or a URL and produce a `no such version 'iron'`
+# that looks nothing like a line-ending fault. One strip() per field closes
+# that off and costs nothing.
 manifest_entries() {
     python3 - "$1" <<'PYEOF'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1])) or {}
 for path, spec in (d.get("repositories") or {}).items():
-    print("%s\t%s\t%s" % (path, spec["url"], spec["version"]))
+    print("%s\t%s\t%s" % (path.strip(), str(spec["url"]).strip(),
+                          str(spec["version"]).strip()))
 PYEOF
 }
 
@@ -948,6 +1296,78 @@ FETCH_FORWARDED=0
 FETCH_CURRENT=0
 FETCH_LEFT_ALONE=0
 FETCH_RESYNCED=0
+
+# ---------------------------------------------------------------------------
+# WHAT KIND OF DIRTY: 224 line-ending diffs that look exactly like work.
+#
+# The first cell run warned that eleven checkouts under ros_ws/src had
+# uncommitted changes, printed 224 `M <file>` lines, and offered
+# --discard-local-changes as the way forward. Every one of those 224 paths ends
+# in `.py`, across eleven unrelated repositories -- tari_ros, yolo_ros,
+# moveit_task_constructor, industrial_reconstruction, csf_loader and the rest,
+# including generated files nobody edits like test_copyright.py and
+# test_pep257.py -- and not one .xml, .yaml, .xacro or .cmake among them.
+# That is not eleven people's work in progress. It is a mechanical rewrite of
+# one file type, which is what an SFTP client in automatic/text transfer mode
+# does: its text-extension list decides what gets CRLF, and `.py` is on it
+# while `.xacro` is not. These trees reach the cell by hand copy from a Windows
+# workstation (see the deployment note), so that is the route.
+#
+# A CRLF working tree against an LF index reports every text file modified, and
+# `git diff` reports it as every line changed:
+#
+#     $ git diff HEAD --numstat                 2  2  a.py
+#     $ git diff HEAD --ignore-cr-at-eol --numstat   (nothing)
+#
+# -- measured, both forms, on a scratch repository. So the discriminator is
+# exactly `--ignore-cr-at-eol --numstat`: a file that disappears from it, or
+# that survives with 0 insertions and 0 deletions, differs only in its line
+# endings or its mode bit. A real edit keeps a nonzero count.
+#
+# Why this matters more than tidiness: the operator could not tell 224
+# line-ending diffs from two real edits, so --discard-local-changes was the
+# only way past the warning and it threw away both kinds. Separating them means
+# the cosmetic 224 can go without a decision, and a real edit stops the run.
+#
+# Prints one word: clean, eol (cosmetic only), submodule (only a submodule
+# pointer differs) or dirty (real content changes, or untracked files, which
+# `clean -fd` would delete).
+# ---------------------------------------------------------------------------
+classify_dirty() {
+    local dest="$1"
+    local porcelain real untracked
+
+    porcelain="$(git -C "$dest" status --porcelain 2>/dev/null || true)"
+    [[ -n "$porcelain" ]] || { echo clean; return 0; }
+
+    # Untracked files are not cosmetic: clean -fd deletes them, and nothing
+    # about a line ending creates a file that is not in the index.
+    untracked="$(printf '%s\n' "$porcelain" | grep -c '^??' || true)"
+    if [[ "${untracked:-0}" -gt 0 ]]; then echo dirty; return 0; fi
+
+    # A submodule whose HEAD is not the recorded commit. reset --hard does not
+    # recurse into one, so this is the state that re-reports itself as
+    # "uncommitted changes" on every single run for ever -- which is what
+    # moveit_task_constructor's core/python/pybind11 did, twice in one log,
+    # including immediately after being "discarded".
+    if [[ -f "$dest/.gitmodules" ]] \
+       && [[ -z "$(git -C "$dest" status --porcelain --ignore-submodules=all 2>/dev/null || true)" ]]; then
+        echo submodule; return 0
+    fi
+
+    real="$(git -C "$dest" diff HEAD --ignore-cr-at-eol --numstat 2>/dev/null \
+            | awk '$1 != 0 || $2 != 0' || true)"
+    if [[ -z "$real" ]]; then echo eol; return 0; fi
+    echo dirty
+}
+
+# The real content changes in a dirty checkout, as `<added>/<removed> <path>`.
+# Printed instead of `status --porcelain` so the two real edits are not buried
+# in the line-ending noise next to them.
+real_changes_in() {
+    git -C "$1" diff HEAD --ignore-cr-at-eol --numstat 2>/dev/null \
+        | awk '$1 != 0 || $2 != 0 { printf "+%s/-%s  %s\n", $1, $2, $3 }' || true
+}
 
 # Hard-reset a checkout onto the manifest's version, saying what that costs.
 #
@@ -1072,18 +1492,65 @@ sync_one_repo() {
     # both recoverable -- the commit sits in the reflog for ninety days and its
     # hash is printed below -- while an uncommitted edit is recoverable from
     # nowhere at all. So it takes its own flag.
-    if [[ -n "$(git -C "$dest" status --porcelain 2>/dev/null)" ]]; then
+    #
+    # ...but only REAL changes are irrecoverable, and most of what showed up
+    # here was not real. classify_dirty separates the two; see the note above
+    # it. Cosmetic dirt is cleared on --discard-local-changes alone and named
+    # as cosmetic, so it cannot hide an edit that matters.
+    local dirty
+    dirty="$(classify_dirty "$dest")"
+    if [[ "$dirty" != clean ]]; then
         if [[ $DISCARD_LOCAL -eq 0 ]]; then
-            warn "$path has uncommitted changes; not fetching over them."
-            if [[ $RESYNC -eq 1 ]]; then
-                warn "--resync does NOT discard these. Commit or stash them, or pass"
-                warn "--discard-local-changes as well if they are genuinely disposable."
-            fi
+            case "$dirty" in
+                eol)
+                    warn "$path differs from the index ONLY in line endings (and/or a"
+                    warn "mode bit): every file is identical with --ignore-cr-at-eol."
+                    warn "Not work in progress. This is a CRLF working tree -- a copy"
+                    warn "through a Windows client in text mode, or a checkout made"
+                    warn "under core.autocrlf=true. Fix the cause on this machine:"
+                    warn "    git config --global core.autocrlf false"
+                    warn "    git -C $path checkout-index -a -f   # rewrite with LF"
+                    warn "or clear it here with --resync --discard-local-changes,"
+                    warn "which treats line endings as disposable without --yes."
+                    ;;
+                submodule)
+                    warn "$path has no file changes at all: only a submodule pointer"
+                    warn "differs from the recorded commit. reset --hard does not"
+                    warn "recurse into a submodule, so this state reports itself for"
+                    warn "ever. Repair it with:"
+                    warn "    git -C $path submodule update --init --recursive"
+                    ;;
+                *)
+                    warn "$path has uncommitted changes; not fetching over them."
+                    real_changes_in "$dest" | sed 's/^/     /' >&2 || true
+                    if [[ $RESYNC -eq 1 ]]; then
+                        warn "--resync does NOT discard these. Commit or stash them, or pass"
+                        warn "--discard-local-changes --yes if they are genuinely disposable."
+                    fi
+                    ;;
+            esac
             FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
             return 0
         fi
-        warn "$path: DISCARDING uncommitted changes --"
-        git -C "$dest" status --porcelain 2>/dev/null | sed 's/^/     /' >&2 || true
+        # --discard-local-changes. Real content changes additionally need --yes:
+        # the whole reason this guard exists is that 224 line-ending diffs made
+        # a real edit invisible, and a flag that discards both kinds puts it
+        # straight back.
+        if [[ "$dirty" == dirty && $ASSUME_YES -eq 0 ]]; then
+            warn "$path has REAL content changes, not just line endings:"
+            real_changes_in "$dest" | sed 's/^/     /' >&2 || true
+            warn "Refusing to discard these on --discard-local-changes alone."
+            warn "Read them (git -C $path diff --ignore-cr-at-eol), then either"
+            warn "commit/stash them or add --yes. Nothing recovers them."
+            FETCH_LEFT_ALONE=$(( FETCH_LEFT_ALONE + 1 ))
+            return 0
+        fi
+        case "$dirty" in
+            eol)       warn "$path: discarding LINE-ENDING-ONLY differences" ;;
+            submodule) warn "$path: restoring the recorded submodule pointer" ;;
+            *)         warn "$path: DISCARDING real uncommitted changes --"
+                       real_changes_in "$dest" | sed 's/^/     /' >&2 || true ;;
+        esac
         # clean -fd, deliberately not -fdx: ignored files are build products and
         # generated version stamps, and removing those turns a source resync
         # into a rebuild of everything downstream.
@@ -1091,6 +1558,15 @@ sync_one_repo() {
              || ! git -C "$dest" clean -fdq 2>/dev/null; then
             warn "$path: could not discard local changes"
             return 1
+        fi
+        # reset --hard leaves a submodule's own HEAD where it was, so without
+        # this the checkout is still dirty the moment the reset finishes -- and
+        # the next run says "DISCARDING uncommitted changes" about the same
+        # pointer again. Advisory: a submodule that cannot be updated (no
+        # network, no access) is not a reason to fail the fetch.
+        if [[ -f "$dest/.gitmodules" ]]; then
+            git -C "$dest" submodule update --init --recursive --quiet 2>/dev/null \
+                || warn "$path: submodules did not update; the pointer stays dirty"
         fi
     fi
 
@@ -1197,7 +1673,9 @@ import_manifest() {
 
 phase_sources() {
     say "Sources"
-    mkdir -p "$WS/src"
+    # Through run(), so --dry-run creates nothing. A dry run that makes
+    # directories is a dry run you cannot use to inspect a shared machine.
+    run "mkdir -p '$WS/src'"
     local rc=0
     for l in $(layer_chain "$LAYER"); do
         note "importing $l.repos"
@@ -1210,7 +1688,8 @@ phase_sources() {
             warn "$FETCH_LEFT_ALONE repository/repositories were LEFT ALONE and did not"
             warn "update. Read the warnings above: a moved remote or a diverged branch"
             warn "is reported, never silently reconciled. --resync forces them to the"
-            warn "manifest; --resync --discard-local-changes also drops uncommitted work."
+            warn "manifest; --resync --discard-local-changes also drops line-ending and"
+            warn "submodule-pointer dirt, and with --yes drops real edits as well."
         fi
     fi
     if [[ $rc -ne 0 ]]; then
@@ -1304,6 +1783,7 @@ ROSDEP_SKIP_KEYS=(libvtk catkin)
 phase_rosdep() {
     say "System dependencies"
     source_ros
+    workspace_env
     # --no-remove is not available through rosdep, so the skip list above is what
     # keeps apt from being asked to trade VTK 9 for VTK 7.
     run "rosdep install --from-paths '$WS/src' --ignore-src -y -r \
@@ -1456,6 +1936,18 @@ from importlib.metadata import distributions
 INTERESTING = ("pyqt5", "pyqt6", "pyside2", "pyside6", "qtpy",
                "shiboken2", "shiboken6", "opencv-python")
 
+# opencv-python is on that list and is NOT a Qt binding, which made the warning
+# read as nonsense on the cell: the heading said "Qt Python bindings" and the
+# only entry was opencv-python 4.11.0.86. It belongs here for a different
+# reason -- the wheel bundles its own Qt plugins and its own libQt*.so, and it
+# shadows apt's python3-opencv, which is the cv2 the rest of this stack was
+# built against -- so say which reason applies to each entry instead of
+# putting one heading over both.
+def why(name):
+    if name.lower().startswith("opencv-python"):
+        return ("shadows apt's python3-opencv and bundles its own Qt plugins")
+    return "a second Qt runtime and sip module ahead of the system one"
+
 # /usr/lib/python3/dist-packages is where apt puts things -- that is the system
 # Qt and it is the one we want. Everything else on sys.path shadows it.
 def is_apt(path):
@@ -1486,8 +1978,8 @@ for dist in distributions():
     location = os.path.realpath(str(dist.locate_file("")))
     if is_apt(location):
         continue
-    print("%s %s (%s)\n        remove with: sudo %s -m pip uninstall %s"
-          % (name, dist.version, location, sys.executable, name))
+    print("%s %s (%s)\n        %s\n        remove with: sudo %s -m pip uninstall %s"
+          % (name, dist.version, location, why(name), sys.executable, name))
 
 # The orphans: a package directory with a Qt name that NO distribution claims.
 # `pip uninstall` cannot touch one of these -- it has no record of it -- so the
@@ -1514,7 +2006,7 @@ for directory in dict.fromkeys(os.path.realpath(d) for d in site_dirs):
 PYEOF
 )"
     [[ -z "$found" ]] && return 0
-    warn "Qt Python bindings installed outside apt:"
+    warn "pip packages outside apt that shadow a system library this stack links:"
     printf '    %s\n' "$found" >&2
     warn "spatialnde2 links the SYSTEM Qt (qtbase5-dev, python3-pyqt5). A pip Qt"
     warn "ships its own Qt runtime and sip module and can be selected instead at"
@@ -1556,9 +2048,106 @@ phase_python() {
     return $rc
 }
 
+# ===========================================================================
+# THE SOURCING RULE, stated once, because it was not uniform and it showed.
+#
+#   Every step that runs colcon, ros2, rosdep or a Python that imports rclpy
+#   calls source_ros() first, and then workspace_env() -- and nothing else
+#   sources anything. source_ros is the ONLY place that names
+#   /opt/ros/$ROSDISTRO/setup.bash; it guards on the file existing and relaxes
+#   nounset across the source, both of which a bare `source` does not.
+#
+# The exception, and the only one: `rosdep update` in phase_prereqs runs with
+# no ROS environment on purpose. It is the step that exists to be run on a
+# machine where /opt/ros may have just appeared, it needs nothing from the
+# distribution, and sourcing a setup.bash there would make a first bootstrap
+# depend on the thing it is bootstrapping.
+#
+# WHY THIS IS A SECTION AND NOT A LINE. The sourcing was already right inside
+# this script -- phase_rosdep, phase_build and phase_verify all call
+# source_ros. What was wrong is that the build phase ran colcon in an
+# environment the generated tari_setup.bash did not reproduce, so building by
+# hand and building through the script were two different builds:
+#
+#   * COLCON_DEFAULTS_FILE was set on phase_build's command line only. There is
+#     a whole comment below about colcon-defaults resolving its file against
+#     the current directory, and a test guarding phase_build for it -- and then
+#     tari_setup.bash did not export it, so a hand-run `colcon build` in ros_ws
+#     reinstated exactly that trap and compiled with an empty CMAKE_BUILD_TYPE.
+#   * the ros2plugin skip was a local array. When SOFA is absent the script
+#     skips that package; a hand-run colcon build does not know that, attempts
+#     it, and dies with
+#
+#         CMake Error at CMakeLists.txt:9 (message):
+#           Please specify variable SOFA_INSTALL_DIR in your environnement
+#
+#     which is what happened on the cell: the script's own build never got far
+#     enough to matter, and the operator's hand-run build hit this and had to
+#     work it out from the CMake error.
+#
+# So both live in workspace_env_lines(), which emits shell assignments; the
+# build phase evaluates them and phase_env writes the same text into
+# tari_setup.bash. One source of truth, and a hand-run build is the scripted
+# one.
+# ===========================================================================
+#: The colcon package that needs SOFA, named once. It is `ros2plugin` in
+#: tari_ros (sofaros2plugin upstream), and both phase_build's --packages-skip
+#: and the note in tari_setup.bash have to agree about it.
+SOFA_PACKAGE=ros2plugin
+
+workspace_env_lines() {
+    local models="$WS/src/tari_ros/tari_ur_launch/models"
+
+    # colcon-defaults resolves `colcon_defaults.yaml` against the CURRENT
+    # DIRECTORY, and every build here runs from ros_ws while the file is in the
+    # workspace root. Absolute, in the environment, so it is read wherever
+    # colcon is started from.
+    echo "export COLCON_DEFAULTS_FILE=\"$ROOT/colcon_defaults.yaml\""
+
+    # Gazebo finds our models here rather than by copying them into
+    # /usr/share/gazebo-11/models, which needed root, was not idempotent, and
+    # left stale copies behind whenever a model was renamed.
+    echo "export GAZEBO_MODEL_PATH=\"$models\${GAZEBO_MODEL_PATH:+:\$GAZEBO_MODEL_PATH}\""
+
+    if [[ -d "$WS/src/sofa" ]]; then
+        echo "export SOFA_INSTALL_DIR=\"$WS/src/sofa\""
+    else
+        echo "# SOFA is not checked out, so $SOFA_PACKAGE cannot build: it does a hard"
+        echo "# CMake error when SOFA_INSTALL_DIR is unset. tari.bash's build phase"
+        echo "# passes --packages-skip $SOFA_PACKAGE; a colcon build by hand needs"
+        echo "# the same, or --with-sofa and a rebuild."
+        echo "export TARI_COLCON_SKIP=\"$SOFA_PACKAGE\""
+    fi
+
+    # Cell manifests: tari_bringup searches every PACKAGE named in
+    # TARI_CELL_PATH first and its own config/cells last, so a site manifest
+    # overrides a shipped one without editing the shared package. A package
+    # name rather than a path, so it survives the workspace moving.
+    #
+    # Only for the site layer. Naming tari_cell_configs in a sim-layer setup
+    # would point at a package that layer deliberately does not have --
+    # harmless, because search_paths() ignores entries it cannot resolve, but
+    # it reads like the setup is broken when it is doing exactly the right
+    # thing.
+    if layer_at_least site; then
+        echo "export TARI_CELL_PATH=\"tari_cell_configs\${TARI_CELL_PATH:+:\$TARI_CELL_PATH}\""
+    fi
+}
+
+# The same lines, applied to this process. Used by every phase that runs
+# colcon, so the scripted build and `source ./tari_setup.bash` cannot drift.
+workspace_env() {
+    local line
+    while IFS= read -r line; do
+        [[ "$line" == export* ]] || continue
+        eval "$line"
+    done < <(workspace_env_lines)
+}
+
 phase_build() {
     say "colcon build"
     source_ros
+    workspace_env
 
     # sofaros2plugin does a hard CMake error("Please specify variable
     # SOFA_INSTALL_DIR") when that variable is unset, and one failing package
@@ -1571,11 +2160,10 @@ phase_build() {
     # uncommitted change in tari_ros forever.
     local skip=()
     if [[ -d "$WS/src/sofa" ]]; then
-        export SOFA_INSTALL_DIR="$WS/src/sofa"
-        note "SOFA_INSTALL_DIR=$SOFA_INSTALL_DIR"
+        note "SOFA at ${SOFA_INSTALL_DIR:-?} (from workspace_env)"
     else
-        skip=(--packages-skip ros2plugin)
-        note "SOFA not present; skipping ros2plugin (use --with-sofa to build it)"
+        skip=(--packages-skip "$SOFA_PACKAGE")
+        note "SOFA not present; skipping $SOFA_PACKAGE (use --with-sofa to build it)"
     fi
     # ONE build, ONE build type. The previous bootstrap ran a release build and
     # then a second --symlink-install build for a single package; mixing them in
@@ -1616,15 +2204,35 @@ phase_build() {
         [[ $workers -gt $cores ]] && workers=$cores
         note "$cores cores, ${mem_gb} GB available -> --parallel-workers $workers"
     fi
-    run "cd '$WS' && COLCON_DEFAULTS_FILE='$ROOT/colcon_defaults.yaml' \
-         colcon build --symlink-install --parallel-workers $workers ${skip[*]}"
+    # COLCON_DEFAULTS_FILE comes from workspace_env above rather than from this
+    # command line, so the environment that builds here is the one
+    # tari_setup.bash reproduces. See the sourcing rule above.
+    run "cd '$WS' && colcon build --symlink-install \
+         --parallel-workers $workers ${skip[*]}"
 }
 
 phase_env() {
     say "Environment"
     local out="$ROOT/tari_setup.bash"
-    local models="$WS/src/tari_ros/tari_ur_launch/models"
 
+    # --dry-run writes nothing. This phase used to write tari_setup.bash
+    # whatever the flag said, which makes --dry-run a modification of the
+    # machine and the one flag you cannot trust on a shared box.
+    if [[ $DRYRUN -eq 1 ]]; then
+        note "+ would write $out:"
+        workspace_env_lines | sed 's/^/      /'
+        return 0
+    fi
+
+    # The two `source` lines are GUARDED and nounset-safe, for the same reason
+    # source_ros and source_quietly are: colcon's generated setup.bash reads
+    # variables it does not set, so sourcing one from a shell with `set -u`
+    # aborts with "unbound variable", and an unguarded `source` of a missing
+    # /opt/ros/.../setup.bash takes the caller's shell down with it. A file
+    # meant to be sourced by everything has to survive both.
+    #
+    # Everything after them comes from workspace_env_lines, which is the same
+    # text phase_build evaluates -- see the sourcing rule above it.
     cat > "$out" <<EOF
 # Generated by tari.bash on $(date -u +%Y-%m-%dT%H:%M:%SZ) for layer '$LAYER'.
 # Regenerate with: ./tari.bash --layer $LAYER --phase env
@@ -1632,37 +2240,25 @@ phase_env() {
 # Source this in every shell that runs anything here, INCLUDING shells that run
 # dataguzzler-python. dgpython_rosmotion is a colcon package, so \`import
 # dgpython_rosmotion\` in a .dgp resolves through the overlay, not through pip.
+#
+# This is also the environment tari.bash's own build phase uses. Build by hand
+# with this sourced and you get the same build; without it you get a different
+# one -- an empty CMAKE_BUILD_TYPE, and an attempt at a package that needs SOFA.
 
-source /opt/ros/$ROSDISTRO/setup.bash
-[ -f "$WS/install/setup.bash" ] && source "$WS/install/setup.bash"
-
-# Gazebo finds our models here rather than by copying them into
-# /usr/share/gazebo-11/models, which needed root, was not idempotent, and left
-# stale copies behind whenever a model was renamed.
-export GAZEBO_MODEL_PATH="$models\${GAZEBO_MODEL_PATH:+:\$GAZEBO_MODEL_PATH}"
+__tari_source() {
+    [ -f "\$1" ] || { echo "tari_setup.bash: no such file: \$1" >&2; return 1; }
+    case "\$-" in *u*) set +u; . "\$1"; set -u ;; *) . "\$1" ;; esac
+}
+if __tari_source "/opt/ros/$ROSDISTRO/setup.bash"; then
+    [ -f "$WS/install/setup.bash" ] && __tari_source "$WS/install/setup.bash"
+else
+    echo "tari_setup.bash: ROS $ROSDISTRO is not installed, so nothing here" >&2
+    echo "will run. Re-bootstrap with ./tari.bash --layer $LAYER" >&2
+fi
+unset -f __tari_source
 
 EOF
-
-    # Cell manifests: tari_bringup searches every PACKAGE named in
-    # TARI_CELL_PATH first and its own config/cells last, so a site manifest
-    # overrides a shipped one without editing the shared package. A package
-    # name rather than a path, so it survives the workspace moving.
-    #
-    # Only written for the site layer. Naming tari_cell_configs in a sim-layer
-    # setup would point at a package that layer deliberately does not have --
-    # harmless, because search_paths() ignores entries it cannot resolve, but
-    # it reads like the setup is broken when it is doing exactly the right
-    # thing.
-    if layer_at_least site; then
-        cat >> "$out" <<EOF
-
-export TARI_CELL_PATH="tari_cell_configs\${TARI_CELL_PATH:+:\$TARI_CELL_PATH}"
-EOF
-    fi
-
-    if [[ -d "$WS/src/sofa" ]]; then
-        echo "export SOFA_INSTALL_DIR=\"$WS/src/sofa\"" >> "$out"
-    fi
+    workspace_env_lines >> "$out"
 
     note "wrote $out"
     note "source it with:  source ./tari_setup.bash"
@@ -1684,6 +2280,7 @@ phase_verify() {
         warn "no colcon overlay at $WS/install"; return 1
     fi
     source_ros
+    workspace_env
     source_quietly "$WS/install/setup.bash"
 
     local expect=(tari_bringup tari_interfaces tari_cpp_mtc tari_noether_srv
@@ -1718,6 +2315,14 @@ phase_verify() {
 }
 
 # ===========================================================================
+# Both of these are about the workspace belonging to somebody else, so they run
+# once for every invocation and before any phase -- including a single
+# `--phase build`, which is the one most likely to be run on its own and the
+# one the ownership fault destroys.
+export_workspace_safe_directories
+warn_about_shared_workspace_policy
+assert_workspace_artefacts_writable
+
 if [[ -n "$ONLY_PHASE" ]]; then
     printf '%s\n' "${ALL_PHASES[@]}" | grep -qx "$ONLY_PHASE" \
         || die "unknown phase: $ONLY_PHASE (one of: ${ALL_PHASES[*]})"

@@ -120,15 +120,36 @@ def build_phase_body():
     return body
 
 
+def workspace_env_body():
+    """tari.bash's workspace_env_lines, as code with comments stripped.
+
+    The variables the build needs used to be set on phase_build's own command
+    line, which meant the generated tari_setup.bash did not have them and a
+    hand-run build was a different build. They now live in one function that
+    both the build phase and the env phase read, so that is the function to
+    assert about.
+    """
+    text = read("tari.bash")
+    match = re.search(r"^workspace_env_lines\(\)\s*\{(.*?)^\}", text, re.M | re.S)
+    assert match, "tari.bash has no workspace_env_lines"
+    return "\n".join(line for _, line in code_lines(match.group(1)))
+
+
 def test_colcon_build_names_the_defaults_file_absolutely():
     if not os.path.exists(os.path.join(ROOT, "colcon_defaults.yaml")):
         pytest.skip("no colcon_defaults.yaml in this workspace")
-    assert "COLCON_DEFAULTS_FILE" in build_phase_body(), (
+    body = build_phase_body()
+    env = workspace_env_body()
+    assert "COLCON_DEFAULTS_FILE" in body or "workspace_env" in body, (
         "colcon-defaults resolves colcon_defaults.yaml against the current "
         "directory, and this build runs from ros_ws while the file is in the "
         "workspace root -- so it is not read and CMAKE_BUILD_TYPE stays empty, "
         "which means the whole workspace compiles with no optimisation flags. "
-        'Pass COLCON_DEFAULTS_FILE="$ROOT/colcon_defaults.yaml".')
+        'Set COLCON_DEFAULTS_FILE="$ROOT/colcon_defaults.yaml".')
+    assert "COLCON_DEFAULTS_FILE" in env, (
+        "phase_build gets its environment from workspace_env_lines, so that is "
+        "where COLCON_DEFAULTS_FILE has to be -- otherwise neither the scripted "
+        "build nor tari_setup.bash has it.")
 
 
 def test_colcon_build_bounds_its_parallelism():

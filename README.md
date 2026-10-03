@@ -128,7 +128,7 @@ missing and nothing else — and any one can be run on its own with `--phase`:
 | `rosdep` | `rosdep install` over `ros_ws/src`; checks the vendor SDKs on `hw` |
 | `python` | runs `dgpy_install.sh --with-extras` (a no-op below `acq`) |
 | `build` | one `colcon build --symlink-install` over all of `ros_ws` |
-| `env` | writes `tari_setup.bash` |
+| `env` | writes `tari_setup.bash` — the same environment the `build` phase itself used, so building by hand and building through the script are one build |
 | `verify` | checks the layer's packages resolve through the ament index, and reports install drift |
 
 `./tari.bash --layer site` runs all seven for the whole chain in one command.
@@ -172,6 +172,68 @@ month's commit under `vcs import`, and it reports success. A checkout with
 uncommitted changes, a diverged branch, or an origin that is not the manifest's
 is reported and left exactly as it was.
 
+### A shared machine: the workspace is one account's, the sudo is another's
+
+On the cell the robot runs as an unprivileged shared account, `labuser`, which
+everybody uses and which has no sudo. Almost every phase here needs sudo, so the
+workspace lives in `labuser`'s home and a **named account with sudo** runs the
+script against it. Everybody is in the group `labusers` and the directories
+carry the setgid bit, so new files inherit that group.
+
+Three things have to be true together, and the cell had two of them:
+
+1. one group everybody is in — `labusers`;
+2. **setgid** on the directories, so a new file inherits it;
+3. a **umask that leaves group write on** — because setgid gives the group, not
+   the permission. Under the default 022 a file comes out
+   `-rw-r--r-- lesthatj labusers`, which nobody else in the group can write,
+   truncate, or `chmod` — only its owner can `chmod` it, so after the fact
+   nothing short of root repairs it.
+
+`tari.bash` sets `umask 0002` for itself (override with `TARI_UMASK`), warns
+when it finds a workspace with several owners and an incomplete arrangement,
+and **refuses to start a build** when anything under `ros_ws/build`,
+`ros_ws/install` or `ros_ws/log` is not writable by the account running it.
+That last one is worth the refusal: colcon reports somebody else's 0644 files
+as
+
+```
+CMake Error at .../CMakePackageConfigHelpers.cmake:344 (configure_file):
+  Operation not permitted
+PermissionError: [Errno 13] ... install/csf_loader_msgs/.../package.dsv
+```
+
+— two hundred lines naming neither ownership nor an account. Recover with
+either a clean rebuild or a one-off repair:
+
+```bash
+rm -rf ros_ws/build ros_ws/install ros_ws/log          # or
+sudo chgrp -R labusers ~labuser/tari
+sudo find ~labuser/tari -type d -exec chmod g+rwxs {} +
+sudo find ~labuser/tari -type f -exec chmod g+rw {} +
+```
+
+and put `umask 0002` in the shell startup file of every account that drives
+this, or the next 022 build recreates it.
+
+Two more consequences of the split, both handled but worth knowing:
+
+- **git refuses a repository it does not own** (`fatal: detected dubious
+  ownership`), and the sharpest case is `sudo pip install .`, where
+  `setuptools_scm` runs git as root over `labuser`'s checkout and the package
+  build dies with `metadata-generation-failed`. Both scripts now pass
+  `safe.directory` for the workspace's own checkouts through `GIT_CONFIG_COUNT`
+  / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`, which applies to that process
+  only. Do **not** `sudo git config --global --add safe.directory "*"`: it is
+  permanent, machine-wide, applies to root, and trusts every repository on the
+  box to get past one bootstrap.
+- **a per-user `setuptools` wins over anything `sudo pip` installs.**
+  `~/.local/lib/python3.10/site-packages` precedes every system directory on
+  `sys.path`, so a `setuptools` 84 in one human's home cannot be displaced by
+  the python phase and the build breaks for that person and nobody else. The
+  prereqs phase now prints where `setuptools` was found and, when it is in your
+  own home, the unprivileged command that removes it.
+
 ### Bringing an existing machine up to the manifest: `--resync`
 
 "Reported and left alone" is right on a development machine, where those
@@ -209,6 +271,30 @@ nowhere at all. To override that as well:
 which adds `reset --hard` and `clean -fd` per repository, printing the file list
 first. Ignored files are kept, so build products survive and the rebuild stays
 incremental. `--discard-local-changes` implies `--resync`.
+
+**Not all "uncommitted changes" are changes.** The first cell run reported 224
+modified files across eleven checkouts, and every one of them was a `.py` file —
+including generated ones nobody edits — because the trees had arrived from a
+Windows workstation through an SFTP client in text mode and were CRLF on disk
+against an LF index. The sources phase now classifies the dirt before it says
+anything about it:
+
+| what it says | what it means | what clears it |
+|---|---|---|
+| `ONLY in line endings` | identical with `--ignore-cr-at-eol`; CRLF or a mode bit | `--discard-local-changes` |
+| `only a submodule pointer` | a submodule HEAD is not the recorded commit — `reset --hard` does not fix this, so it reports itself for ever | `--discard-local-changes` (it runs `submodule update`) |
+| `REAL content changes` | a real edit, listed as `+added/-removed path` | `--discard-local-changes --yes` |
+
+So cosmetic dirt costs no decision, and a real edit cannot be thrown away
+hidden among two hundred line-ending diffs. Fix the cause of the CRLF too:
+
+```bash
+git config --global core.autocrlf false
+```
+
+`.gitattributes` pins `eol=lf` for this repository, so a checkout here cannot
+acquire CRLF from a global git config — but the checkouts under `ros_ws/src` are
+other projects' and carry their own.
 
 Read the one-line summary either way:
 
@@ -424,6 +510,32 @@ dataguzzler-python.** `dgpython_rosmotion` is a colcon package, so
 `import dgpython_rosmotion` inside a `.dgp` resolves through the ROS overlay
 rather than through pip. There is one environment here and it always has ROS in
 it.
+
+**That includes a shell that runs `colcon build` by hand**, which is not just a
+tidiness rule. `tari_setup.bash` carries the two variables the build phase
+itself uses, and without them a hand-run build differs from the scripted one in
+ways nothing reports:
+
+- `COLCON_DEFAULTS_FILE` — colcon's defaults extension looks for
+  `colcon_defaults.yaml` at a path relative to the current directory, and a
+  build runs from `ros_ws` while the file is in the workspace root. Unset, the
+  whole workspace compiles with an empty `CMAKE_BUILD_TYPE`: no `-O` flags at
+  all, and no error.
+- `TARI_COLCON_SKIP` (or `SOFA_INSTALL_DIR`, when SOFA is checked out) — the
+  package that needs SOFA does a hard `CMake Error ... Please specify variable
+  SOFA_INSTALL_DIR in your environnement` when the variable is unset, and one
+  failing package aborts the rest of the build. With SOFA absent the script
+  skips it; so must you:
+
+  ```bash
+  source ./tari_setup.bash
+  cd ros_ws && colcon build --symlink-install \
+      ${TARI_COLCON_SKIP:+--packages-skip $TARI_COLCON_SKIP}
+  ```
+
+Keep `--symlink-install` in that command. A workspace built once with it and
+once without ends up with packages that have an `install/` tree and no ament
+index marker, which fail every `ros2 run` silently.
 
 ---
 
@@ -892,6 +1004,23 @@ These are things a correct, complete bootstrap still does not give you on Ubuntu
   into the 64–79 window. If something else on the machine upgrades it again,
   all of the above returns at once; `sudo python3 -m pip install
   'setuptools>=64,<80'` is the repair.
+
+  **Unless it is in your own home, in which case `sudo` cannot reach it.** The
+  first cell run carried `setuptools` 84.0.0 in
+  `/home/lesthatj/.local/lib/python3.10/site-packages`. The python phase pinned
+  the system copy as designed, the user site directory still precedes it on
+  `sys.path`, and the colcon build that followed loaded 84 anyway — visible in
+  its own stderr as
+  `.local/lib/python3.10/site-packages/setuptools/_distutils`. So the prereqs
+  phase now prints **where** `setuptools` was found, and when that is your home
+  it prints the unprivileged command instead:
+
+  ```bash
+  python3 -m pip uninstall -y setuptools      # no sudo; it is yours
+  ```
+
+  On a shared machine this has to be done for every account that runs builds:
+  whichever `~/.local` wins is whoever is logged in.
 
 - **`pyquaternion` and `trimesh` come from pip, not apt** — no Ubuntu package and
   no rosdep key exists for either under any spelling, so only `--phase prereqs`
