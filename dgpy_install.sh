@@ -153,6 +153,7 @@ SELECT_ARG=""
 FORCE=0
 DRYRUN=0
 WITH_EXTRAS=0
+ALLOW_DIRTY=0
 
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -174,6 +175,7 @@ Options:
   --from NAME          operate on NAME and every package after it
   --force              reinstall even when the installed copy is current
   --with-extras        also build the optional Cython extras
+  --allow-dirty        with --check, do not fail on DIRTY (see below)
   -n, --dry-run        print the pip commands without running them
   --python PYTHON      interpreter to install into (default: python3,
                        override with DGPY_PYTHON)
@@ -182,6 +184,8 @@ Options:
 Exit status:
   0  everything requested succeeded; with --check, everything is current
   1  a build or install failed; with --check, something is stale or missing
+     (--allow-dirty excludes DIRTY from that, for the one caller that built the
+     install from the very tree being called dirty -- see the case below)
   2  every package and every REQUIRED extra installed, but an OPTIONAL extra
      did not. The stack is usable; one thing nothing depends on is missing.
 EOF
@@ -195,6 +199,7 @@ while [[ $# -gt 0 ]]; do
         --from)        SELECT=from; SELECT_ARG="${2:?--from needs a package name}"; shift ;;
         --force)       FORCE=1 ;;
         --with-extras) WITH_EXTRAS=1 ;;
+        --allow-dirty) ALLOW_DIRTY=1 ;;
         -n|--dry-run)  DRYRUN=1 ;;
         --python)      PY="${2:?--python needs an interpreter}"; shift ;;
         -h|--help)     usage; exit 0 ;;
@@ -895,6 +900,7 @@ if [[ "$MODE" == check ]]; then
     rc=0
     misplaced=0
     legacy_seen=0
+    dirty_seen=0
     printf '%-26s %-12s %s\n' "PACKAGE" "STATE" "DETAIL"
     for i in "${INDICES[@]}"; do
         entry="${PACKAGES[$i]}"; dir="${entry%%|*}"; dist="${entry##*|}"
@@ -906,7 +912,18 @@ if [[ "$MODE" == check ]]; then
             # not a fault, so it must not fail --check: tari.bash's verify phase
             # runs this, and an acq-layer machine would otherwise never verify.
             ABSENT)              colour="\033[90m" ;;
-            DIRTY)               colour="\033[33m"; rc=1 ;;
+            # DIRTY says the source has uncommitted changes, so no installed
+            # copy can be KNOWN to match it. That uncertainty is real on a
+            # developer's machine and is the point of the state. It does not
+            # apply to an image build, which copies a tree in and installs from
+            # exactly that tree moments later -- there the installed copy is
+            # known to match, uncommitted changes and all, and failing on it
+            # would mean no image could ever be built while anyone had
+            # uncommitted work in any of nine packages. Same reasoning as ABSENT
+            # above: report it, do not fail on it, and only when asked.
+            DIRTY)               colour="\033[33m"
+                                 [[ $ALLOW_DIRTY -eq 1 ]] || rc=1
+                                 dirty_seen=1 ;;
             EDITABLE|USER-SITE)  colour="\033[31m"; rc=1; misplaced=1 ;;
             LEGACY)              colour="\033[31m"; rc=1; legacy_seen=1 ;;
             *)                   colour="\033[31m"; rc=1 ;;
@@ -914,7 +931,11 @@ if [[ "$MODE" == check ]]; then
         printf "%-26s ${colour}%-12s\033[0m %s\n" "$dir" "$state" "$detail"
     done
     echo
-    if [[ $rc -eq 0 ]]; then
+    if [[ $rc -eq 0 && $dirty_seen -eq 1 ]]; then
+        info "Every package is installed system-wide and built from the tree here."
+        echo "DIRTY above means that tree has uncommitted changes; --allow-dirty"
+        echo "says that is expected, because this install was built from it."
+    elif [[ $rc -eq 0 ]]; then
         info "Every installed package matches its checked-out commit."
     else
         echo "Reinstall the packages above with:  ./dgpy_install.sh"

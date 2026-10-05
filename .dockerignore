@@ -1,0 +1,42 @@
+# Build context for container/images/ros2-iron-jammy/Dockerfile.
+#
+# THE CONTEXT IS THIS WORKSPACE, AND THIS WORKSPACE IS 27 GB. scandata alone is
+# 16 GB, ros_ws 5 GB, and spatialnde2's two build directories another 5 GB --
+# none of which the image wants. So this is an ALLOWLIST: exclude everything,
+# then name the handful of things the final layer installs. A denylist would
+# have to be updated every time the workspace grew a new large directory, and
+# the failure mode of forgetting is a multi-gigabyte context rather than an
+# error anyone would notice.
+*
+
+# The dataguzzler-python side of the workspace, which the last layer installs
+# system-wide with dgpy_install.sh. These total about 24 MB.
+!dgpy_install.sh
+!spatialnde2
+!dataguzzler-python
+!dgpython-param-manager
+!dgpython-local
+!dgpython-azurekinect
+!dgpython-nidaqmx
+!dgpython-uniwest
+!dgpython-opencv-camera
+!spatialnde2-ec-functions
+
+# ...but not their build output. These re-exclusions come AFTER the
+# re-inclusions above because later rules win, and without them spatialnde2
+# alone would drag 5 GB of build/ and build-container/ into the context.
+#
+# .git IS DELIBERATELY KEPT, all 15 MB of it. Every one of these packages takes
+# its version from setuptools_scm, which reads it from git -- so a context
+# without .git installs everything as a version derived from nothing, and
+# `dgpy_install.sh --check` compares that against the working tree and can no
+# longer tell current from stale. The version string IS the drift detector; it
+# is the whole reason the installed commit is answerable at all. 15 MB is a
+# cheap price for it.
+**/__pycache__
+**/*.egg-info
+**/*.pyc
+spatialnde2/build
+spatialnde2/build-container
+spatialnde2-ec-functions/build
+dataguzzler-python/build

@@ -779,6 +779,18 @@ way; on one clean-machine bootstrap two modules failed this way on four
 consecutive runs. An install now removes that metadata first, naming the path it
 removed, and then installs normally. Nothing has to be done by hand.
 
+`DIRTY` is the one state with an exemption, and the exemption is opt-in. It means
+the source has uncommitted changes, so no installed copy can be *known* to match
+it — which is exactly what you want to hear on a development or cell machine, and
+is why `--check` fails on it and why `tari.bash --phase verify` passes no flag.
+It is not true in the container image build, which copies a tree in and installs
+from that same tree seconds later: there the installed copy is known to match,
+uncommitted changes and all, and failing on it would mean no image could be built
+while anyone had uncommitted work in any of the nine packages. That build alone
+passes `--check --allow-dirty`, which excuses `DIRTY` and nothing else — `STALE`,
+`MISSING`, `EDITABLE`, `USER-SITE` and `LEGACY` still fail — and still prints the
+`DIRTY` line, so an image built from uncommitted work says so.
+
 Two more states matter. `ABSENT` means the source is not checked out at all, which
 on a machine that imported only `acq.repos` is the ordinary state of the instrument
 drivers and is not a finding. `BROKEN` means the installed copy carries exactly the
