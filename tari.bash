@@ -2095,6 +2095,11 @@ phase_python() {
 #: and the note in tari_setup.bash have to agree about it.
 SOFA_PACKAGE=ros2plugin
 
+# Where the NORMS metadata plug-in is installed for EASEL to call. A directory
+# of its own rather than /usr/local/bin: when a plug-in run fails, NORMS writes
+# its log NEXT TO THE EXECUTABLE, and that is the first place to look.
+NORMS_PLUGIN_DIR="${TARI_NORMS_PLUGIN_DIR:-/opt/norms-plugins/ec-scan}"
+
 workspace_env_lines() {
     local models="$WS/src/tari_ros/tari_ur_launch/models"
 
@@ -2142,6 +2147,55 @@ workspace_env() {
         [[ "$line" == export* ]] || continue
         eval "$line"
     done < <(workspace_env_lines)
+}
+
+# ---------------------------------------------------------------------------
+# The NORMS metadata plug-in.
+#
+# NORMS/EASEL documents a measurement from the files it finds and the forms the
+# operator fills in; a plug-in is the only path by which anything INSIDE the
+# data files reaches that record. EASEL starts it by ABSOLUTE PATH with no
+# shell, so it has to exist at a fixed location on the cell machine rather than
+# inside a checkout whose path nobody typed into the Setup form.
+#
+# Site layer only: it documents an eddy-current scan, and only a cell takes one.
+#
+# Copied rather than symlinked. EASEL resolves the executable and writes its own
+# log beside it; a symlink into a git checkout would put that log in the
+# repository and make the plug-in disappear whenever the checkout moved.
+install_norms_plugin() {
+    local src="$ROOT/ROS-Scanning/norms/ec_scan_plugin.py"
+    local dst="$NORMS_PLUGIN_DIR/ec_scan_plugin.py"
+
+    if [[ ! -f "$src" ]]; then
+        warn "no NORMS plug-in at $src; skipping its install."
+        warn "ROS-Scanning is checked out by the acq layer -- if that ran, this"
+        warn "is a stale checkout and 'git -C ROS-Scanning pull' fixes it."
+        return 0
+    fi
+
+    if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+        note "NORMS plug-in already current at $dst"
+    else
+        run "sudo install -D -m 0755 '$src' '$dst'"
+        note "NORMS plug-in installed at $dst"
+    fi
+
+    # The one dependency that is not obvious: it runs under the SYSTEM python3,
+    # never a ROS one, because EASEL starts it with whatever environment EASEL
+    # has. Saying so here is cheaper than finding out from a "JSON Missing" in
+    # EASEL's log after a scan.
+    if [[ $DRYRUN -eq 0 ]]; then
+        if ! /usr/bin/python3 -c 'import numpy, matplotlib' >/dev/null 2>&1; then
+            warn "/usr/bin/python3 cannot import numpy and matplotlib, so the NORMS"
+            warn "plug-in will fail at the first scan. Install them for the SYSTEM"
+            warn "python -- a ROS or conda interpreter is not the one EASEL runs."
+        fi
+    fi
+
+    note "configure EASEL: Plugin Executable = $dst"
+    note "  Extension(s) = npz, Arguments = --files %s, Restriction = Only Oldest"
+    note "  (ROS-Scanning/norms/README.md explains why)"
 }
 
 phase_build() {
@@ -2209,6 +2263,13 @@ phase_build() {
     # tari_setup.bash reproduces. See the sourcing rule above.
     run "cd '$WS' && colcon build --symlink-install \
          --parallel-workers $workers ${skip[*]}"
+
+    # Nothing to do with colcon, but this is the last phase that puts anything
+    # on the machine, and the plug-in needs the ROS-Scanning checkout that
+    # phase_sources made.
+    if layer_at_least site; then
+        install_norms_plugin
+    fi
 }
 
 phase_env() {
@@ -2299,6 +2360,31 @@ phase_verify() {
         echo
         note "dataguzzler-python stack:"
         "$ROOT/dgpy_install.sh" --check || rc=1
+    fi
+
+    # The NORMS plug-in, EXERCISED rather than merely found. EASEL starts it
+    # with its own environment and parses stdout; the ways it fails are all
+    # ways the file is present and the output is wrong -- no executable bit, a
+    # shebang that resolves to an interpreter without numpy, anything at all on
+    # stdout that is not the one JSON object. Running it the way EASEL does is
+    # the only check worth making, and it costs a few hundred milliseconds.
+    if layer_at_least site; then
+        echo
+        note "NORMS metadata plug-in:"
+        local plug="$NORMS_PLUGIN_DIR/ec_scan_plugin.py"
+        if [[ ! -x "$plug" ]]; then
+            printf '  \033[31mMISSING\033[0m %s (EASEL would report "Plug-in Not Defined")\n' "$plug"
+            rc=1
+        elif env -i PATH=/usr/bin:/bin HOME="${HOME:-/tmp}" "$plug" 2>/dev/null \
+                | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d else 1)' 2>/dev/null; then
+            printf '  \033[32mok     \033[0m %s (one JSON object, no ROS, no environment)\n' "$plug"
+        else
+            printf '  \033[31mBROKEN \033[0m %s runs but does not print one JSON object.\n' "$plug"
+            warn "  EASEL would record this as JSON Invalid or Plug-in Error and keep"
+            warn "  no metadata. Usually /usr/bin/python3 cannot import numpy or"
+            warn "  matplotlib; check with:  /usr/bin/python3 -c 'import numpy, matplotlib'"
+            rc=1
+        fi
     fi
 
     echo

@@ -48,6 +48,9 @@
 # Runs dgpy_install.sh itself, with package_status() stubbed, to pin which
 # --check states are fatal. No network, no ROS, nothing installed.
 !test/test_check_exit_status.py
+# Drives tari.bash's own --dry-run to pin where the NORMS metadata plug-in is
+# installed and on which layer. Installs nothing and needs no privilege.
+!test/test_norms_plugin_install.py
 
 
 # --- the container ---------------------------------------------------------
