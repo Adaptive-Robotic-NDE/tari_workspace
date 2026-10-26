@@ -64,6 +64,17 @@ set -euo pipefail
 umask "${TARI_UMASK:-0002}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# --public builds from the PUBLIC manifests in public/, which name the public
+# mirrors over HTTPS and need no account, no SSH key and no membership of the
+# organisation. They are generated from the manifests beside this script by
+# tools/make_public_manifests.py; see the header of any file in public/.
+#
+# This is not a lesser mode for the team's benefit -- it is the only mode that
+# works for somebody outside it, and keeping it in the same script is what stops
+# it rotting. MANIFEST_DIR is the whole of the difference.
+PUBLIC=0
+MANIFEST_DIR="$ROOT"
 WS="$ROOT/ros_ws"
 ROSDISTRO="${ROSDISTRO:-iron}"
 
@@ -204,6 +215,10 @@ Options:
   --with-test-data   also clone the recorded scan fixtures the suites use
                      (~95 MB over git-lfs; without it those sections skip)
   --check-remotes    test that every manifest URL resolves, then exit
+  --public           build from public/*.repos: the public mirrors over HTTPS,
+                     needing no account, SSH key or organisation membership.
+                     The site layer is unavailable and hw has no eddy-current
+                     instrument driver; everything else builds.
   --resync           force every checkout to exactly what the manifest says:
                      move a remote that points somewhere else, switch branch,
                      and hard-reset a branch that has diverged. REFUSES a
@@ -246,6 +261,7 @@ while [[ $# -gt 0 ]]; do
         --with-sofa)     WITH_SOFA=1 ;;
         --with-test-data) WITH_TEST_DATA=1 ;;
         --check-remotes) DO_CHECK_REMOTES=1 ;;
+        --public)        PUBLIC=1 ;;
         --resync)        RESYNC=1 ;;
         --discard-local-changes)
                          # Implies --resync: discarding edits in order to leave
@@ -258,6 +274,25 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+if [[ $PUBLIC -eq 1 ]]; then
+    MANIFEST_DIR="$ROOT/public"
+    [[ -d "$MANIFEST_DIR" ]] || die "--public needs $MANIFEST_DIR; generate it with tools/make_public_manifests.py"
+    # The site layer is per-cell configuration and a restricted loader. Both of
+    # its repositories are private with no public counterpart, so the layer is
+    # empty in public form: say so rather than importing nothing and reporting
+    # success.
+    if [[ "${LAYER:-}" == "site" ]]; then
+        die "--layer site is not available publicly: it is entirely per-cell
+   configuration (tari_site) and a restricted loader (csf_loader), neither of
+   which is published. The highest public layer is hw."
+    fi
+    if [[ "${LAYER:-}" == "hw" ]]; then
+        warn "the public hw layer has no eddy-current instrument driver"
+        warn "(dgpython-uniwest is a vendor driver and is not published)."
+        warn "Everything else in the layer is there."
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Layer chain. Additive by construction: importing sim then acq then hw leaves
@@ -287,8 +322,8 @@ layer_at_least() {  # layer_at_least acq  -> true when LAYER is acq, hw or site
 layer_manifest_paths() {
     local l
     for l in $(layer_chain "$LAYER"); do
-        [[ -f "$ROOT/$l.repos" ]] || continue
-        manifest_entries "$ROOT/$l.repos" | cut -f1
+        [[ -f "$MANIFEST_DIR/$l.repos" ]] || continue
+        manifest_entries "$MANIFEST_DIR/$l.repos" | cut -f1
     done
 }
 
@@ -1678,8 +1713,8 @@ phase_sources() {
     run "mkdir -p '$WS/src'"
     local rc=0
     for l in $(layer_chain "$LAYER"); do
-        note "importing $l.repos"
-        import_manifest "$ROOT/$l.repos" || rc=1
+        note "importing ${PUBLIC:+public/}$l.repos"
+        import_manifest "$MANIFEST_DIR/$l.repos" || rc=1
     done
 
     if [[ $DRYRUN -eq 0 ]]; then

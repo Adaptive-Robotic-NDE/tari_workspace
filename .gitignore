@@ -30,6 +30,16 @@
 !site.repos
 !workspace.repos
 
+# --- the public form of the same manifests ---------------------------------
+# What somebody outside the organisation builds from: the public mirrors over
+# HTTPS, no account and no SSH key. Generated from the manifests above by
+# tools/make_public_manifests.py and committed, so a public user can run plain
+# `vcs import < public/sim.repos` without this repository's tooling.
+!public/
+!public/*.repos
+!tools/
+!tools/make_public_manifests.py
+
 # --- checks over the bootstrap ---------------------------------------------
 # Static checks on the scripts above -- no target environment, no ROS, nothing
 # installed:  python3 -m pytest test/
@@ -51,6 +61,10 @@
 # Drives tari.bash's own --dry-run to pin where the NORMS metadata plug-in is
 # installed and on which layer. Installs nothing and needs no privilege.
 !test/test_norms_plugin_install.py
+# Runs the public-manifest generator's --check, so a manifest edited without
+# regenerating fails the suite, and asserts that the public form has no SSH
+# URL, no private repository and nothing dropped without a stated reason.
+!test/test_public_manifests.py
 
 
 # --- the container ---------------------------------------------------------
