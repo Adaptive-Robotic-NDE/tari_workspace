@@ -52,7 +52,7 @@ def code_lines(text):
 #     $ if ldconfig -p | grep -q libk4a; then echo FOUND; else echo "NOT ($?)"; fi
 #     NOT (141)
 #
-# Measured on lablinux 2026-09-30, where it made `tari.bash --layer hw` refuse to
+# Measured on Ubuntu 22.04 (2026-09-30), where it made `tari.bash --layer hw` refuse to
 # build with "MISSING: Azure Kinect Sensor SDK" on a machine carrying libk4a
 # 1.4.2. The fix is to read the producer's whole output first -- tari.bash's
 # have_shared_lib() does -- or to drop -q.

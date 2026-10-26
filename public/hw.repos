@@ -47,26 +47,22 @@ repositories:
     version: iron
 
   # keyence_experimental does not build without this package: it generates
-  # ChangeProgram.srv. It is published nowhere upstream, so this repository is
-  # the only copy; before it existed the package travelled between cell
-  # machines by hand.
+  # ChangeProgram.srv. It is published nowhere upstream.
   ros_ws/src/keyence_interfaces:
     type: git
     url: https://github.com/Adaptive-Robotic-NDE/keyence_interfaces.git
     version: iron
 
   # A pyk4a/numba Azure driver, and the ORIGIN of the Azure xacro macro and its
-  # mount meshes. Its absence is what made `launch_azure:=true` fail at xacro
-  # time with PackageNotFoundError on every machine here, and it is why both
-  # this workspace and the ultrasound cell grew separate hand-rolled
-  # replacements for the macro. The copy here came from the eddy-current cell's
-  # machine.
+  # mount meshes. Its absence made `launch_azure:=true` fail at xacro time with
+  # PackageNotFoundError, which is why separate hand-rolled replacements for the
+  # macro appeared in more than one installation.
   #
   # NOTHING IN THE SIM LAYER DEPENDS ON IT and nothing should: the robot
   # description carries the macro itself, so a machine with no Azure SDK still
   # builds and still simulates. The driver NODE is what lives here, and it
-  # needs libk4a plus pyk4a and numba (requirements.txt) to run at all. The
-  # cells start Microsoft's C++ azure_kinect_ros_driver today; this is an
+  # needs libk4a plus pyk4a and numba (requirements.txt) to run at all. A cell
+  # starts Microsoft's C++ azure_kinect_ros_driver today; this is an
   # alternative implementation, kept for provenance as much as for use.
   #
   ros_ws/src/azure_kinect_python_ros2_driver:
@@ -89,7 +85,7 @@ repositories:
 
   dgpython-nidaqmx:
     type: git
-    # PERSONAL REMOTE. Should move to the org.
+    # Hosted under an individual's account rather than the organisation's.
     url: https://github.com/lesthaeghet/dgpython-nidaqmx.git
     version: master
 
@@ -99,10 +95,6 @@ repositories:
   # this piece exists and is deliberately absent.
   # dgpython-uniwest:
   # type: git
-  # # `_private` rather than `_staging`: this one is not on a path to public
-  # # release. Its origin was previously a local path on a Windows machine, so
-  # # the only copy of this module was a single working tree.
-  # #
   # # Dashes in the repository name and underscores in the package name is the
   # # dataguzzler convention, and is why this is not renamed the way the ROS
   # # packages were.
@@ -111,6 +103,6 @@ repositories:
 
   dgpython-opencv-camera:
     type: git
-    # PERSONAL REMOTE. Should move to the org.
+    # Hosted under an individual's account rather than the organisation's.
     url: https://github.com/lesthaeghet/dgpython-opencv-camera.git
     version: master

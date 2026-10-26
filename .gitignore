@@ -2,7 +2,7 @@
 #
 # This directory is a working root that also contains 20-odd checked-out
 # repositories and a large amount of one-off material generated while solving
-# problems -- handoff notes, probe scripts, patched copies of other people's
+# problems -- notes, probe scripts, patched copies of other people's
 # launch files, logs. Almost none of it is something this repository should
 # carry, and a blocklist would let the next one through by default.
 #
@@ -13,11 +13,10 @@
 
 # --- the bootstrap itself --------------------------------------------------
 !.gitignore
-# Line endings, pinned to LF. These trees reach the cell by hand copy from a
-# Windows workstation, and one such copy arrived with 224 .py files rewritten
-# to CRLF -- every one of which then read as an uncommitted change. It has to
-# be TRACKED to travel with the bootstrap, which this whitelist would otherwise
-# prevent.
+# Line endings, pinned to LF. Trees copied by hand from a Windows workstation
+# can arrive with every .py file rewritten to CRLF (one copy had 224) -- every
+# one of which then reads as an uncommitted change. It has to be TRACKED to
+# travel with the bootstrap, which this whitelist would otherwise prevent.
 !.gitattributes
 !README.md
 !tari.bash
@@ -80,10 +79,10 @@
 # straight after cloning the bootstrap and says how to get the rest.
 !ros2_docker.sh
 # The image's last layer installs the dataguzzler packages, so the build context
-# has to be this workspace -- which is 27 GB of checkouts, scan data and build
-# trees. This allowlist cuts it to about 39 MB. It is LOAD-BEARING and belongs
-# with the bootstrap: without it the build sends the whole working root, and a
-# fresh clone would have no idea why.
+# has to be the whole working root -- which can reach 27 GB of checkouts, scan
+# data and build trees. This allowlist cuts it to about 39 MB. It is
+# LOAD-BEARING and belongs with the bootstrap: without it the build sends the
+# whole working root, and a fresh clone would have no idea why.
 !.dockerignore
 
 # --- never ------------------------------------------------------------------

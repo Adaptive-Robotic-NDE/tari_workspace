@@ -17,8 +17,9 @@ repositories:
 
   ros_ws/src/tari_site:
     type: git
-    # `_private`, not `_staging`: this is not on a path to public release. The
-    # checkout path drops the suffix, as everywhere else.
+    # `_private` marks a repository with no published form: a site layer
+    # describes one installation. The checkout path drops the suffix, as
+    # everywhere else.
     url: git@github.com:Adaptive-Robotic-NDE/tari_site_private.git
     version: iron
 
@@ -26,10 +27,7 @@ repositories:
     type: git
     # Reads HandyScan 3D .csf files, extracts tracking targets and correlates
     # them with the same targets detected in the Azure Kinect IR image. Site
-    # data because the format is proprietary and the targets are ours.
-    #
-    # This repository was in NO manifest at all until now -- neither the old
-    # workspace.repos nor dependencies.repos listed it -- so no bootstrap has
-    # ever reproduced it.
+    # data because the format is proprietary and the targets belong to the
+    # installation.
     url: git@github.com:Adaptive-Robotic-NDE/csf_loader_private.git
     version: iron

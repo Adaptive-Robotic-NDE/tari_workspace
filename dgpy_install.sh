@@ -133,7 +133,7 @@ declare -A IMPORT_PROBE=(
 # spatialnde2_cpp_calibration_function: the third case, and it hid behind the
 # fact that the extra could not be built at all until its setup.py was fixed.
 # It cythonizes calibration_function.pyx exactly as its sibling extra does, so
-# it fails at the same numpy/distutils/ccompiler.py:771. Measured on lablinux
+# it fails at the same numpy/distutils/ccompiler.py:771. Measured on
 # 2026-09-30: `pip wheel` with the variable set succeeds and the identical
 # command without it dies with the TypeError, so the key is what separates an
 # optional extra that builds on Ubuntu 22.04 from one that reports itself
@@ -258,8 +258,8 @@ require_privilege() {
 #
 # A package.xml means colcon builds it, and a pip install of the same source
 # then puts a second copy on PYTHONPATH where the colcon one shadows it -- you
-# edit one and run the other. That failure has already cost this project a
-# session, twice, at two different levels. It is cheap to make impossible.
+# edit one and run the other. That failure has occurred at two different
+# levels. It is cheap to make impossible.
 # ---------------------------------------------------------------------------
 assert_not_a_ros_package() {
     local dir="$1"
@@ -277,21 +277,21 @@ assert_not_a_ros_package() {
 # Guard: never install over another project's copy.
 #
 # Everything here installs system-wide, and none of these distribution names
-# belongs to this workspace alone -- spatialnde2 and dataguzzler-python are
+# belongs to this repository alone -- spatialnde2 and dataguzzler-python are
 # shared upstream projects, and a lab machine can perfectly well be running a
 # second, unrelated experiment off its own checkout of them.
 #
-# That is not hypothetical. On the machine this guard was written for, another
-# project was running spatialnde2 and dataguzzler-python built from
-# /usr/local/src, from different remotes than this workspace's, with two of its
-# own dgpython modules depending on them. Both installed versions carried a
+# That is not hypothetical. A machine was observed running spatialnde2 and
+# dataguzzler-python built from /usr/local/src for another project, from
+# different remotes than this repository's, with two of that project's own
+# dgpython modules depending on them. Both installed versions carried a
 # setuptools_scm .dYYYYMMDD suffix, meaning they were built from dirty trees --
 # which package_status() classifies as STALE. So this script would have
 # reinstalled over them without being asked to, and --force was not required:
 # the clobber was the default behaviour.
 #
 # pip records the source directory of a local install in
-# dist-info/direct_url.json. If it is outside this workspace, the installed copy
+# dist-info/direct_url.json. If it is outside this repository, the installed copy
 # is somebody else's and we stop.
 # ---------------------------------------------------------------------------
 foreign_install_origin() {
@@ -324,7 +324,7 @@ PYEOF
 }
 
 report_foreign_install() {
-    # A package already installed from a source tree that is not this workspace.
+    # A package already installed from a source tree that is not this repository.
     #
     # THIS IS A NOTE, NOT A GATE, and deliberately so. Converging
     # dataguzzler-python and spatialnde2 onto one version everywhere is the point
@@ -418,8 +418,8 @@ PYEOF
 #         determine which files belong to it which would lead to only a partial
 #         uninstall.
 #
-# Measured on marvin 2026-09-30: dgpython_nidaqmx and dgpython_uniwest failed
-# this way on FOUR consecutive runs of the python phase and never recovered,
+# Measured on 2026-09-30: two instrument-driver modules (dgpython_nidaqmx and
+# a vendor driver) failed this way on FOUR consecutive runs of the python phase and never recovered,
 # because nothing about re-running changes the thing in the way. Their previous
 # copies came from `python3 setup.py install` out of /usr/local/src, which
 # leaves `<name>.egg-info` metadata and no RECORD, so pip cannot know which
@@ -575,9 +575,9 @@ package_status() {
     # packages here ship C++ shared libraries next to the extension module, and
     # an install can carry exactly the right version string and still not load:
     # a wrong RPATH, a library built against a different Qt, a downstream
-    # extension left over from an earlier ABI. That failure has cost this project
-    # two separate sessions, both times after a --check that said everything was
-    # current. So for the packages where an import is unambiguous, import it.
+    # extension left over from an earlier ABI. That failure has occurred twice,
+    # both times after a --check that said everything was current. So for the
+    # packages where an import is unambiguous, import it.
     #
     # Only these two. Every other package here is a dataguzzler-python module
     # that may reasonably refuse to import without its instrument attached, and
@@ -728,12 +728,12 @@ cmake_prebuild() {
 #     pip._vendor.pyproject_hooks._impl.BackendUnavailable:
 #         Cannot import 'setuptools.build_meta'
 #
-# Measured on this workspace's Arch host (Python 3.14.7): with the variable set,
+# Measured on an Arch host (Python 3.14.7): with the variable set,
 # `pip wheel` on spatialnde2-ec-functions and on
 # spatialnde2_cpp_calibration_function both fail that way before a compiler runs;
 # without it, both build. So the splice is decided by asking the interpreter that
 # will do the build, not by hardcoding either answer. Anything else makes the
-# script work on exactly one of the two machines this workspace runs on.
+# script work on only one of the two kinds of machine it is run on.
 interpreter_has_stdlib_distutils() {
     "$PY" - <<'PYEOF' >/dev/null 2>&1
 import sys
@@ -748,22 +748,21 @@ interpreter_has_stdlib_distutils && INTERPRETER_HAS_STDLIB_DISTUTILS=1
 # `sudo pip install .` makes git run as root over somebody else's checkout.
 #
 # Every package here is versioned by setuptools_scm, which shells out to git.
-# The install is under sudo by policy, so that git is root -- and on the cell
-# the workspace lives in labuser's home, which root does not own either. git's
-# CVE-2022-24765 guard then refuses:
+# The install is under sudo by policy, so that git is root -- and on a shared
+# machine the workspace can live in an unprivileged account's home, which root
+# does not own either. git's CVE-2022-24765 guard then refuses:
 #
 #     fatal: detected dubious ownership in repository at
 #            '/home/labuser/tari/dgpython-opencv-camera'
 #     git introspection failed: fatal: detected dubious ownership ...
 #     error: subprocess-exited-with-error / metadata-generation-failed
 #
-# which took out two packages on the first cell run -- the only hard failure in
+# which took out two packages in one observed run -- the only hard failure in
 # that phase -- and reads as a build error rather than an ownership one.
 #
 # The reflex fix is `sudo git config --global --add safe.directory "*"`, which
-# is what was done there. It is permanent, machine-wide, applies to root, and
-# declares every repository on the box trusted in order to get past one
-# bootstrap. GIT_CONFIG_COUNT/KEY/VALUE is the same setting for ONE directory
+# is permanent, machine-wide, applies to root, and declares every repository on
+# the box trusted in order to get past one bootstrap. GIT_CONFIG_COUNT/KEY/VALUE is the same setting for ONE directory
 # and ONE command: nothing is written to any config file, and it is gone when
 # pip exits. sudo's env_reset drops it unless it is passed explicitly, which is
 # exactly what the `env` splice below already does for the build variables.
@@ -969,7 +968,7 @@ fi
 # ---------------------------------------------------------------------------
 # setuptools is needed in a WINDOW, not from a floor upwards, and the upper end
 # of it is not a style preference. Measured on a clean jammy bootstrap
-# (marvin, 2026-09-30): this function used to ask for `-U "setuptools>=64"`,
+# (2026-09-30): this function used to ask for `-U "setuptools>=64"`,
 # which resolved to 84.0.0 and wrote it into /usr/local/lib/python3.10/
 # dist-packages, ahead of apt's 59.6.0 on sys.path. Everything below broke in
 # the same run, and pip warned about it inside the very command that caused it:
@@ -994,13 +993,13 @@ fi
 #     dgpython_ros2_mtcserver, tari_yolo_utils -- and aborts everything
 #     downstream of them.
 #
-# 79.x satisfies everything this workspace actually needs from a modern
+# 79.x satisfies everything this repository actually needs from a modern
 # setuptools: the [project] table honoured with a setup.py present (>= 61), and
 # setuptools_scm 8's build backend (>= 64). So the ceiling costs nothing.
 #
 # This is not "downgrading another project's setuptools to build ours": apt's
 # colcon on this distro declares setuptools<80 itself, so a machine above the
-# ceiling is broken for every ROS package on it, not only for this workspace.
+# ceiling is broken for every ROS package on it, not only for this repository.
 # The repair is still announced out loud rather than done silently.
 SETUPTOOLS_FLOOR=64
 SETUPTOOLS_CEILING=80          # exclusive
@@ -1144,7 +1143,7 @@ if [[ $DRYRUN -eq 0 ]]; then
     # arrive after half the workspace has been reinstalled.
     for i in "${INDICES[@]}"; do
         entry="${PACKAGES[$i]}"
-        # Only for packages this workspace actually has a source tree for.
+        # Only for packages this repository actually has a source tree for.
         # Reporting "replacing it" about a package we are not going to touch --
         # dgpython_nidaqmx, say, installed by another project on a machine that
         # has only the acq layer checked out -- says the opposite of the truth.

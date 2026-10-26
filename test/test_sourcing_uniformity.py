@@ -1,10 +1,9 @@
 """THE SOURCING RULE: one place names the ROS environment, and the generated
 setup file reproduces the environment the build phase used.
 
-The operator's report after the first cell run was that tari.bash is
-"inconsistent about sourcing /opt/ros/iron/setup.bash or even just
-tari_setup.bash". Auditing it, the `source` calls themselves were already
-right -- phase_rosdep, phase_build and phase_verify all go through
+An operator's report was that tari.bash is "inconsistent about sourcing
+/opt/ros/iron/setup.bash or even just tari_setup.bash". Auditing it, the
+`source` calls themselves were already right -- phase_rosdep, phase_build and phase_verify all go through
 source_ros(). What was actually inconsistent is the half nobody calls sourcing:
 the build phase ran colcon in an environment that tari_setup.bash did not
 reproduce, so building through the script and building by hand were two
@@ -16,7 +15,7 @@ Two variables, both visible in the log:
     defaults extension resolves `colcon_defaults.yaml` against the current
     directory, the build runs from ros_ws and the file is in the workspace
     root, so a hand-run build does not read it and compiles with an empty
-    CMAKE_BUILD_TYPE. The operator's hand-run build had to pass
+    CMAKE_BUILD_TYPE. A hand-run build then has to pass
     `--cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo`, which is a third build
     type, neither the script's nor an unset one.
 
@@ -27,8 +26,8 @@ Two variables, both visible in the log:
         CMake Error at CMakeLists.txt:9 (message):
           Please specify variable SOFA_INSTALL_DIR in your environnement
 
-    which is the SOFA failure in the log, and it came from a build by hand
-    rather than from the script.
+    which is the SOFA failure, and it comes from a build by hand rather than
+    from the script.
 
 So the rule being tested is: every step that runs colcon, ros2 or
 `rosdep install` calls source_ros() and then workspace_env(), and

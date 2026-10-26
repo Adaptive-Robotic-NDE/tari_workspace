@@ -8,8 +8,8 @@ rather than surfacing as an ImportError in a scan months later.
 Those two callers want different things from one state. DIRTY means the source
 has uncommitted changes, so no installed copy can be KNOWN to match it:
 
-  * On a developer's or a cell machine that uncertainty is the whole point, and
-    tari.bash must keep failing on it. That caller passes no flag.
+  * On a developer's or a deployment machine that uncertainty is the whole
+    point, and tari.bash must keep failing on it. That caller passes no flag.
   * In an image build it is false. The layer copies a tree in and installs from
     exactly that tree seconds later, so the installed copy is known to match,
     uncommitted changes and all. Without an exemption no image could be built

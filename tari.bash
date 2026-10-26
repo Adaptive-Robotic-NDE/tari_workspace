@@ -5,7 +5,7 @@
 #     ./tari.bash --layer sim      simulation only; nothing private, no hardware
 #     ./tari.bash --layer acq      + the dataguzzler-python acquisition stack
 #     ./tari.bash --layer hw       + instrument drivers (needs two vendor SDKs)
-#     ./tari.bash --layer site     + our cell manifests and calibration
+#     ./tari.bash --layer site     + cell manifests and calibration
 #
 # Layers are additive and each is a strict superset of the one before, so
 # --layer hw imports sim, then acq, then hw. Everything is idempotent: run it
@@ -22,37 +22,37 @@
 #     verify    smoke-test the layer
 #
 # NOT A CONTAINER SCRIPT. This installs natively. The docker tooling next to
-# this file exists only because one development machine runs Arch, where ROS
-# Iron is not packaged; it is a local convenience and not how this stack is
-# meant to be deployed.
+# this file exists only for distributions such as Arch, where ROS Iron is not
+# packaged; it is a local convenience and not how this stack is meant to be
+# deployed.
 #
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # A SHARED WORKSPACE, DRIVEN BY WHICHEVER HUMAN IS LOGGED IN.
 #
-# The robot runs as an unprivileged shared account (`labuser` on the cell), so
-# the workspace lives in that account's home -- but labuser has no sudo, and
-# almost every phase here needs it. So the person who runs this script is a
-# NAMED account with sudo, operating on a tree that another account owns and
-# that the whole `labusers` group has to be able to rewrite tomorrow.
+# The robot may run as an unprivileged shared account (called `labuser` in the
+# examples here), so the workspace lives in that account's home -- but that
+# account has no sudo, and almost every phase here needs it. So the person who
+# runs this script is a NAMED account with sudo, operating on a tree that
+# another account owns and that the whole shared group (`labusers` in the
+# examples) has to be able to rewrite tomorrow.
 #
-# The group half of that is already arranged on the cell: the directories carry
-# the setgid bit, so anything created inside them inherits the group. What
-# setgid DOES NOT do is make the file group-WRITABLE -- that comes from the
-# creating process's umask, and the default 022 produces
+# The group half of that is normally arranged by the administrator: the
+# directories carry the setgid bit, so anything created inside them inherits
+# the group. What setgid DOES NOT do is make the file group-WRITABLE -- that
+# comes from the creating process's umask, and the default 022 produces
 #
-#     -rw-r--r--  lesthatj labusers   package.dsv
+#     -rw-r--r--  alice labusers   package.dsv
 #
 # which the next person in the group cannot write, truncate or chmod. Only the
-# owner can chmod a file, so nothing short of root repairs it afterwards. That
-# is the whole of the "setgid causes its own set of issues" problem, and it is
-# what the first cell run died of: ros_ws/build and ros_ws/install were full of
-# another account's 0644 files, and the build came apart into two hundred lines
-# of
+# owner can chmod a file, so nothing short of root repairs it afterwards. A
+# first run on such a machine fails this way: ros_ws/build and ros_ws/install
+# fill with another account's 0644 files, and the build comes apart into two
+# hundred lines of
 #
 #     CMake Error ... (configure_file): Operation not permitted
-#     PermissionError: [Errno 13] ... install/csf_loader_msgs/.../package.dsv
+#     PermissionError: [Errno 13] ... install/<package>/.../package.dsv
 #
 # none of which says "someone else owns this file". 0002 is therefore not a
 # preference: with setgid directories it is the other half of the mechanism,
@@ -121,9 +121,9 @@ fatal_unless_dry() { if [[ $DRYRUN -eq 1 ]]; then warn "$*"; else die "$*"; fi; 
 #     $ set +o pipefail; ldconfig -p | grep -q libk4a && echo FOUND
 #     FOUND
 #
-# Measured on lablinux 2026-09-30, where this made --layer hw refuse to build
-# with "MISSING: Azure Kinect Sensor SDK" on a machine carrying libk4a 1.4.2 and
-# a working k4aConfig.cmake. Read all of ldconfig's output first; then nothing
+# Measured on Ubuntu 22.04 (2026-09-30), where this made --layer hw refuse to
+# build with "MISSING: Azure Kinect Sensor SDK" on a machine carrying libk4a
+# 1.4.2 and a working k4aConfig.cmake. Read all of ldconfig's output first; then nothing
 # closes a pipe early.
 have_shared_lib() {
     local cache
@@ -157,8 +157,9 @@ run()  { if [[ $DRYRUN -eq 1 ]]; then printf '    + %s\n' "$*"; else eval "$@"; 
 # ---------------------------------------------------------------------------
 # `apt-get update` exits 0 with an index it failed to refresh.
 #
-# The cell machine carries a dozen third-party apt sources belonging to other
-# projects, and one of them -- librealsense -- has an expired signing key:
+# A machine shared with other projects can carry a dozen third-party apt
+# sources, and one of them -- librealsense, for example -- can have an expired
+# signing key:
 #
 #     W: GPG error: https://librealsense.intel.com/Debian/apt-repo jammy
 #        InRelease: ... NO_PUBKEY FB0B24895113F120
@@ -344,21 +345,21 @@ layer_manifest_paths() {
 #     fatal: detected dubious ownership in repository at
 #            '/home/labuser/tari/dgpython-opencv-camera'
 #
-# which is CVE-2022-24765's fix doing its job: the workspace is in labuser's
-# home and git is running as lesthatj, or (worse) as root under `sudo pip`.
-# That is exactly how the first cell run lost its python phase -- two packages'
-# setup.py call setuptools_scm, setuptools_scm shells out to git, git was root,
-# and the build died with "git introspection failed" and
+# which is CVE-2022-24765's fix doing its job: the workspace is in the shared
+# account's home and git is running as another user, or (worse) as root under
+# `sudo pip`. That is how the python phase can fail on a first run -- two
+# packages' setup.py call setuptools_scm, setuptools_scm shells out to git, git
+# runs as root, and the build dies with "git introspection failed" and
 # `error: metadata-generation-failed`.
 #
 # The reflex is `sudo git config --global --add safe.directory "*"`, which is
-# what was done on the cell and is the wrong shape of fix: it is permanent, it
-# is machine-wide, it applies to root, and it says every repository on the box
-# is trusted for ever in order to get past one bootstrap.
+# the wrong shape of fix: it is permanent, it is machine-wide, it applies to
+# root, and it says every repository on the box is trusted for ever in order to
+# get past one bootstrap.
 #
 # GIT_CONFIG_COUNT/KEY/VALUE is the same setting scoped to this process tree.
 # It writes nothing into anybody's ~/.gitconfig, it lists ONLY the checkouts
-# this workspace's own manifests name, and it is gone when the script exits.
+# this repository's own manifests name, and it is gone when the script exits.
 # (git >= 2.31 for the environment form; jammy carries 2.34.)
 #
 # An existing GIT_CONFIG_COUNT is respected rather than clobbered: the entries
@@ -396,8 +397,8 @@ export_workspace_safe_directories() {
 #       Operation not permitted
 #
 # because cmake writes the file and then copies its timestamps, and utime() on
-# a file you do not own is EPERM rather than EACCES. Seven packages failed and
-# seventeen aborted behind them on the first cell run, and not one line of the
+# a file you do not own is EPERM rather than EACCES. In one observed build seven
+# packages failed and seventeen aborted behind them, and not one line of the
 # output named ownership.
 #
 # So ask the question directly, before the build phase spends four minutes
@@ -417,9 +418,9 @@ assert_workspace_artefacts_writable() {
         # Regular files and directories only. -writable calls access(), which
         # FOLLOWS a symlink, so a dangling one answers "not writable" -- and
         # --symlink-install fills these trees with symlinks, several of which
-        # point at a container path that does not exist on the host. -type
-        # uses lstat, so naming the two types skips every link. (Measured on
-        # lablinux: without this the check fired on
+        # point at a path from a container that does not exist outside it.
+        # -type uses lstat, so naming the two types skips every link. (Measured:
+        # without this the check fired on
         # build/keyence_interfaces/.../keyence_interfaces -> /home/user/...)
         hit="$(find "$d" \( -type f -o -type d \) ! -writable -print -quit 2>/dev/null || true)"
         [[ -n "$hit" ]] || continue
@@ -452,8 +453,8 @@ assert_workspace_artefacts_writable() {
 #   2. setgid on the directories, so new files inherit it
 #   3. a umask that leaves group write on            (0002, set at the top)
 #
-# Two out of three is the state the cell was in, and it looks like it is
-# working right up to the moment a second person builds. So say so -- but only
+# Two out of three looks like it is working right up to the moment a second
+# person builds. So say so -- but only
 # on a workspace that is actually shared, which is what more than one owner
 # among its top-level entries means. On a single-user machine, where the
 # primary group is the user's own, none of this is a finding and the function
@@ -834,24 +835,25 @@ install_bpy() {
 # The same problem again, one layer up, for a dataguzzler-python module rather
 # than a ROS node.
 #
-# dgpython_uniwest declares no dependencies at all, and dgpy_install.sh installs
-# with --no-deps by policy, so nothing anywhere names what it imports. It will
-# not import without both of these -- and the failure is at IMPORT, before any
-# instrument is contacted, so it is not "no hardware attached":
+# The eddy-current instrument driver module declares no dependencies at all,
+# and dgpy_install.sh installs with --no-deps by policy, so nothing anywhere
+# names what it imports. It will not import without both of these -- and the
+# failure is at IMPORT, before any instrument is contacted, so it is not "no
+# hardware attached":
 #
-#     dgpython_uniwest/U454ALowLevelHelper.py   import pyvisa
-#     dgpython_uniwest/GPIBLowLevelHelper.py    from events import Events
+#     its serial low-level helper    import pyvisa
+#     its GPIB low-level helper      from events import Events
 #
-# GPIBLowLevelHelper is reached from U454ALowLevelHelper at module scope, so the
+# The GPIB helper is reached from the serial helper at module scope, so the
 # GPIB path being unused does not make `events` optional.
 #
 # pyvisa comes from apt because jammy HAS it (python3-pyvisa 1.11.3 in universe,
-# with python3-pyvisa-py for the serial backend the U454A talks over). `events`
-# is the PyPI Events package and has no Ubuntu package under any spelling, so it
-# is the one that has to be pip'd, --no-deps like the rest.
+# with python3-pyvisa-py for the serial backend the instrument talks over).
+# `events` is the PyPI Events package and has no Ubuntu package under any
+# spelling, so it is the one that has to be pip'd, --no-deps like the rest.
 #
-# hw only: a sim- or acq-layer machine has no UniWest and no reason to carry a
-# VISA stack.
+# hw only: a sim- or acq-layer machine has no such instrument and no reason to
+# carry a VISA stack.
 # ---------------------------------------------------------------------------
 install_hw_python_prereqs() {
     layer_at_least hw || return 0
@@ -882,7 +884,7 @@ install_hw_python_prereqs() {
 #         ModuleNotFoundError: No module named 'pkg_resources'
 #   * apt's pbr (reached through a setuptools entry point) imports
 #     pkg_resources too, so EVERY package build fails metadata generation --
-#     measured on marvin 2026-09-30, five packages in one run:
+#     measured on 2026-09-30, five packages in one run:
 #         error: failed: spatialnde2 dataguzzler-python dgpython_param_manager
 #                dgpython-local spatialnde2_ec_functions
 #   * `setup.py develop --uninstall` is gone above 80, and that is what colcon
@@ -921,11 +923,11 @@ ensure_working_vcs() {
     fi
 
     # 2. setuptools has to be below the ceiling -- and the WHERE matters as much
-    #    as the version, which is what the first cell run proved.
+    #    as the version.
     #
-    #    That machine carried setuptools 84.0.0 in
-    #    /home/lesthatj/.local/lib/python3.10/site-packages: the invoking
-    #    human's per-user site directory. The python phase duly ran
+    #    A machine can carry setuptools 84.0.0 in
+    #    ~/.local/lib/python3.10/site-packages: the invoking human's per-user
+    #    site directory. The python phase duly ran
     #    `sudo pip install 'setuptools>=64,<80'`, which writes
     #    /usr/local/lib/python3.10/dist-packages -- and the user site precedes
     #    that on sys.path, so the pin could not take effect and never did. The
@@ -988,8 +990,8 @@ PYEOF
     # 4. pytest has to import, for a reason that is nothing to do with running
     #    the suites here.
     #
-    #    python3-pytest is in the apt list above, and the first cell run
-    #    installed it -- and the build that followed still said, eleven times,
+    #    python3-pytest is in the apt list above, and a build can follow its
+    #    installation and still say, eleven times,
     #
     #        CMake Warning at .../ament_add_pytest_test.cmake:82 (message):
     #          The Python module 'pytest' was not found, pytests cannot be run.
@@ -997,9 +999,9 @@ PYEOF
     #
     #    on a machine where that package was already the newest version.
     #    ament_cmake_pytest probes the interpreter cmake found, so this is a
-    #    statement about THAT interpreter's sys.path, and that machine had a
-    #    private ~/.local ahead of the system directories (see the setuptools
-    #    note above, same directory, same account).
+    #    statement about THAT interpreter's sys.path, and such a machine can
+    #    have a private ~/.local ahead of the system directories (see the
+    #    setuptools note above, same directory, same account).
     #
     #    The consequence is quiet and bad: those eleven packages configure with
     #    no tests registered at all, so `colcon test` afterwards passes having
@@ -1101,7 +1103,7 @@ phase_prereqs() {
     # curl and gnupg are needed to fetch and check the ROS signing key, and the
     # three ROS-repo-only packages above are needed before anything else, so the
     # repository has to exist first. --no-remove on every install: apt is never
-    # allowed to solve a dependency by taking something off this machine.
+    # allowed to solve a dependency by taking something off the machine.
     ensure_ros_apt_repo
     apt_update
     run "sudo apt-get install -y --no-remove ${pkgs[*]}"
@@ -1203,15 +1205,15 @@ warn_about_dangling_rosdep_sources() {
 #
 # `vcs import` fans out over its repositories concurrently (10 workers by
 # default) and github.com throttles concurrent SSH connections per source
-# address. On marvin, 2026-09-30, importing hw.repos' nine repositories gave
+# address. Importing hw.repos' nine repositories was observed to give
 # eight simultaneous failures -- the progress line was `E.EEEEEEE`, one dot for
 # the one HTTPS entry -- every one of them:
 #
 #     Could not clone repository
-#     'git@github.com:isuthermography/dgpython-azurekinect_staging.git':
+#     'git@github.com:isuthermography/dgpython-azurekinect.git':
 #     Cloning into '.'...
 #     kex_exchange_identification: read: Connection reset by peer
-#     Connection reset by 140.82.112.3 port 22
+#     Connection reset by <github.com address> port 22
 #     fatal: Could not read from remote repository.
 #
 #     Please make sure you have the correct access rights
@@ -1346,18 +1348,18 @@ FETCH_RESYNCED=0
 # ---------------------------------------------------------------------------
 # WHAT KIND OF DIRTY: 224 line-ending diffs that look exactly like work.
 #
-# The first cell run warned that eleven checkouts under ros_ws/src had
+# A first run once warned that eleven checkouts under ros_ws/src had
 # uncommitted changes, printed 224 `M <file>` lines, and offered
-# --discard-local-changes as the way forward. Every one of those 224 paths ends
+# --discard-local-changes as the way forward. Every one of those 224 paths ended
 # in `.py`, across eleven unrelated repositories -- tari_ros, yolo_ros,
-# moveit_task_constructor, industrial_reconstruction, csf_loader and the rest,
+# moveit_task_constructor, industrial_reconstruction and the rest,
 # including generated files nobody edits like test_copyright.py and
 # test_pep257.py -- and not one .xml, .yaml, .xacro or .cmake among them.
 # That is not eleven people's work in progress. It is a mechanical rewrite of
 # one file type, which is what an SFTP client in automatic/text transfer mode
 # does: its text-extension list decides what gets CRLF, and `.py` is on it
-# while `.xacro` is not. These trees reach the cell by hand copy from a Windows
-# workstation (see the deployment note), so that is the route.
+# while `.xacro` is not. Trees copied by hand from a Windows workstation take
+# this route.
 #
 # A CRLF working tree against an LF index reports every text file modified, and
 # `git diff` reports it as every line changed:
@@ -1370,9 +1372,10 @@ FETCH_RESYNCED=0
 # that survives with 0 insertions and 0 deletions, differs only in its line
 # endings or its mode bit. A real edit keeps a nonzero count.
 #
-# Why this matters more than tidiness: the operator could not tell 224
-# line-ending diffs from two real edits, so --discard-local-changes was the
-# only way past the warning and it threw away both kinds. Separating them means
+# Why this matters more than tidiness: an operator cannot tell 224
+# line-ending diffs from two real edits, so --discard-local-changes would be
+# the only way past the warning and it would throw away both kinds. Separating
+# them means
 # the cosmetic 224 can go without a decision, and a real edit stops the run.
 #
 # Prints one word: clean, eol (cosmetic only), submodule (only a submodule
@@ -1508,10 +1511,10 @@ sync_one_repo() {
             return 0
         fi
         # THE CASE A MANIFEST CHANGE CREATES. When a third-party repository
-        # acquires a local patch it moves to our own fork, and every existing
+        # acquires a local patch it moves to a fork, and every existing
         # checkout is then pointing at the upstream it came from -- which is
-        # exactly the situation where "report and leave alone" means the cell
-        # quietly keeps running unpatched code.
+        # exactly the situation where "report and leave alone" means the
+        # installation quietly keeps running unpatched code.
         note "$path: origin $remote -> $url"
         if ! git -C "$dest" remote set-url origin "$url"; then
             warn "$path: could not move origin to $url"
@@ -1672,7 +1675,7 @@ sync_one_repo() {
         if [[ $RESYNC -eq 1 ]]; then
             # A branch that does not exist locally yet -- the manifest moved a
             # repository onto a new branch name, which is what happens the
-            # first time a third-party checkout becomes our fork.
+            # first time a third-party checkout becomes a fork.
             if git -C "$dest" checkout --quiet -B "$version" "$target_sha"; then
                 note "$path force-resynced to ${target_sha:0:12} ($version, new local branch)"
                 FETCH_RESYNCED=$(( FETCH_RESYNCED + 1 ))
@@ -1961,7 +1964,7 @@ EOF
 # PACKAGE DIRECTORY in /usr/local/lib/python3.10/dist-packages with its
 # .dist-info gone. importlib.metadata then reports nothing while the directory
 # still precedes apt's on sys.path, so the shadow is complete and invisible to
-# a distribution scan. That is the one the servo operator hit on 2026-09-30:
+# a distribution scan. That is the shape observed on 2026-09-30:
 #
 #     ImportError: .../PyQt5/QtCore.abi3.so: undefined symbol: _ZdaPvm
 #
@@ -1983,8 +1986,8 @@ INTERESTING = ("pyqt5", "pyqt6", "pyside2", "pyside6", "qtpy",
                "shiboken2", "shiboken6", "opencv-python")
 
 # opencv-python is on that list and is NOT a Qt binding, which made the warning
-# read as nonsense on the cell: the heading said "Qt Python bindings" and the
-# only entry was opencv-python 4.11.0.86. It belongs here for a different
+# read as nonsense: the heading said "Qt Python bindings" and the only entry
+# was opencv-python 4.11.0.86. It belongs here for a different
 # reason -- the wheel bundles its own Qt plugins and its own libQt*.so, and it
 # shadows apt's python3-opencv, which is the cv2 the rest of this stack was
 # built against -- so say which reason applies to each entry instead of
@@ -2127,9 +2130,9 @@ phase_python() {
 #         CMake Error at CMakeLists.txt:9 (message):
 #           Please specify variable SOFA_INSTALL_DIR in your environnement
 #
-#     which is what happened on the cell: the script's own build never got far
-#     enough to matter, and the operator's hand-run build hit this and had to
-#     work it out from the CMake error.
+#     which a hand-run build hits: the script's own build never got far
+#     enough to matter, and the person running by hand had to work it out from
+#     the CMake error.
 #
 # So both live in workspace_env_lines(), which emits shell assignments; the
 # build phase evaluates them and phase_env writes the same text into
@@ -2155,7 +2158,8 @@ workspace_env_lines() {
     # colcon is started from.
     echo "export COLCON_DEFAULTS_FILE=\"$ROOT/colcon_defaults.yaml\""
 
-    # Gazebo finds our models here rather than by copying them into
+    # Gazebo finds the workspace's models here rather than by copying them
+    # into
     # /usr/share/gazebo-11/models, which needed root, was not idempotent, and
     # left stale copies behind whenever a model was renamed.
     echo "export GAZEBO_MODEL_PATH=\"$models\${GAZEBO_MODEL_PATH:+:\$GAZEBO_MODEL_PATH}\""
@@ -2201,10 +2205,11 @@ workspace_env() {
 # NORMS/EASEL documents a measurement from the files it finds and the forms the
 # operator fills in; a plug-in is the only path by which anything INSIDE the
 # data files reaches that record. EASEL starts it by ABSOLUTE PATH with no
-# shell, so it has to exist at a fixed location on the cell machine rather than
-# inside a checkout whose path nobody typed into the Setup form.
+# shell, so it has to exist at a fixed location on the acquisition machine
+# rather than inside a checkout whose path nobody typed into the Setup form.
 #
-# Site layer only: it documents an eddy-current scan, and only a cell takes one.
+# Site layer only: it documents an eddy-current scan, and only a site that
+# takes one needs it.
 #
 # Copied rather than symlinked. EASEL resolves the executable and writes its own
 # log beside it; a symlink into a git checkout would put that log in the
@@ -2280,7 +2285,7 @@ phase_build() {
     # So the file was never read and neither -DCMAKE_BUILD_TYPE=Release nor
     # -DCMAKE_EXPORT_COMPILE_COMMANDS=ON reached cmake: the whole workspace
     # built with an empty CMAKE_BUILD_TYPE, which means no -O flags at all.
-    # Verified on lablinux 2026-09-30 by reading CMAKE_BUILD_TYPE out of
+    # Verified on 2026-09-30 by reading CMAKE_BUILD_TYPE out of
     # ros_ws/build/*/CMakeCache.txt.
     #
     # Parallelism: colcon's default is one worker per core, and an unbounded

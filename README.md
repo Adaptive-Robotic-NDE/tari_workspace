@@ -1,7 +1,7 @@
 # TARI robotic NDE scanning workspace
 
 Robotic nondestructive evaluation: a UR10e carries an eddy-current or ultrasound
-probe over a specimen, a toolpath is planned from a mesh the cell reconstructed
+probe over a specimen, a toolpath is planned from a mesh the system reconstructed
 itself, and the measurements are projected back onto the surface as an image.
 
 This repository is the **bootstrap**. It contains no application code — only the
@@ -13,7 +13,7 @@ that turn them into a working system.
     sim.repos            the shareable simulation layer
     acq.repos            + the acquisition stack
     hw.repos             + instrument drivers
-    site.repos           + our cells and calibration (private)
+    site.repos           + site cell manifests and calibration (not published)
     test/                suites that check the two scripts; no ROS, no build
 
 **Every command below was run, in the order given, on an Ubuntu 22.04.5 machine
@@ -78,10 +78,9 @@ Two things about Iron are worth knowing before you start.
 A repository name and the directory it is checked out into are not the same
 string, on purpose.
 
-`_staging` marks a private repository for internal development that is not yet
-ready for public release. A CI/CD pipeline will be responsible for promoting to
-public; that does not exist yet. `_private` marks something that is not on a path
-to public release at all — site data, proprietary formats.
+A suffix on the remote's name records its release state. `_staging` marks a
+repository whose published form drops the suffix; `_private` marks one with no
+published form at all — site data, proprietary formats.
 
 **The manifests always check out into the name without the suffix**, so the
 working tree is named for what a package set *is* rather than for its release
@@ -90,7 +89,7 @@ state, and nothing has to be renamed when a repository is promoted.
 ROS and colcon-managed repositories use underscores throughout, matching ROS
 convention. The dataguzzler modules keep the dataguzzler convention instead:
 dashes in the repository name, underscores in the package name — so
-`dgpython-uniwest` on disk provides `dgpython_uniwest` to Python.
+`dgpython-opencv-camera` on disk provides `dgpython_opencv_camera` to Python.
 
 ---
 
@@ -103,12 +102,11 @@ Layers are additive and each is a strict superset of the one before, so
 |---|---|---|
 | `sim` | Gazebo, MoveIt/MTC, Noether, reconstruction, mesh filtering, YOLO, **and both motion action servers** | nothing private, no hardware |
 | `acq` | spatialnde2, dataguzzler-python, the scan configurations | a C++17/SWIG/Qt/OSG build |
-| `hw` | Azure, Keyence, NI-DAQmx and Uniwest drivers | the devices, and two vendor SDKs installed by hand |
-| `site` | our cell manifests and calibration | org credentials |
+| `hw` | Azure, Keyence, NI-DAQmx and eddy-current instrument drivers | the devices, and two vendor SDKs installed by hand |
+| `site` | a site's cell manifests and calibration | access to that site's repository |
 
 There is a fifth layer, `container`. **Ignore it.** It builds a Docker image and
-exists only because one development machine runs Arch, where ROS Iron is not
-packaged. It is a local convenience, not how this stack is deployed, and nothing
+exists only for distributions such as Arch, where ROS Iron is not packaged. It is a local convenience, not how this stack is deployed, and nothing
 below needs it.
 
 The line that matters is between `hw` and `site`. Everything up to and including
@@ -174,19 +172,21 @@ is reported and left exactly as it was.
 
 ### A shared machine: the workspace is one account's, the sudo is another's
 
-On the cell the robot runs as an unprivileged shared account, `labuser`, which
-everybody uses and which has no sudo. Almost every phase here needs sudo, so the
-workspace lives in `labuser`'s home and a **named account with sudo** runs the
-script against it. Everybody is in the group `labusers` and the directories
-carry the setgid bit, so new files inherit that group.
+On a shared machine the robot can run as an unprivileged shared account
+(`labuser` in these examples), which everybody uses and which has no sudo.
+Almost every phase here needs sudo, so the workspace lives in `labuser`'s home
+and a **named account with sudo** runs the script against it. Everybody is in
+the group `labusers` and the directories carry the setgid bit, so new files
+inherit that group.
 
-Three things have to be true together, and the cell had two of them:
+Three things have to be true together, and a machine with only two of them
+looks as if it works until a second person builds:
 
 1. one group everybody is in — `labusers`;
 2. **setgid** on the directories, so a new file inherits it;
 3. a **umask that leaves group write on** — because setgid gives the group, not
    the permission. Under the default 022 a file comes out
-   `-rw-r--r-- lesthatj labusers`, which nobody else in the group can write,
+   `-rw-r--r-- alice labusers`, which nobody else in the group can write,
    truncate, or `chmod` — only its owner can `chmod` it, so after the fact
    nothing short of root repairs it.
 
@@ -200,7 +200,7 @@ as
 ```
 CMake Error at .../CMakePackageConfigHelpers.cmake:344 (configure_file):
   Operation not permitted
-PermissionError: [Errno 13] ... install/csf_loader_msgs/.../package.dsv
+PermissionError: [Errno 13] ... install/<package>/.../package.dsv
 ```
 
 — two hundred lines naming neither ownership nor an account. Recover with
@@ -237,8 +237,8 @@ Two more consequences of the split, both handled but worth knowing:
 ### Bringing an existing machine up to the manifest: `--resync`
 
 "Reported and left alone" is right on a development machine, where those
-checkouts carry work in progress, and wrong on a cell that simply needs to match
-what the manifests now say. To force it:
+checkouts carry work in progress, and wrong on a deployment machine that simply
+needs to match what the manifests now say. To force it:
 
 ```bash
 git pull --ff-only          # the manifests live here, so this comes first
@@ -252,7 +252,7 @@ missing and runs one colcon build over what changed.
 
 **It is needed whenever a manifest changes a repository's `url` or `version`**,
 and without it nothing goes wrong loudly. That case is real: a third-party
-repository that acquires a local patch moves to our own fork on a `tari/iron`
+repository that acquires a local patch moves to a fork on a `tari/iron`
 branch — `industrial_reconstruction`, `yolo_ros`, and `noether` since the
 `getDistancesToMinMaxCuts` fix — and every machine that cloned it beforehand is
 pointing at the upstream it came from. A plain `--phase sources` reports that and
@@ -272,7 +272,7 @@ which adds `reset --hard` and `clean -fd` per repository, printing the file list
 first. Ignored files are kept, so build products survive and the rebuild stays
 incremental. `--discard-local-changes` implies `--resync`.
 
-**Not all "uncommitted changes" are changes.** The first cell run reported 224
+**Not all "uncommitted changes" are changes.** A first run once reported 224
 modified files across eleven checkouts, and every one of them was a `.py` file —
 including generated ones nobody edits — because the trees had arrived from a
 Windows workstation through an SFTP client in text mode and were CRLF on disk
@@ -313,7 +313,7 @@ success.
 ### 1. Clone
 
 ```bash
-git clone --branch iron git@github.com:Adaptive-Robotic-NDE/tari_workspace_staging.git ~/tari
+git clone --branch iron https://github.com/Adaptive-Robotic-NDE/tari_workspace.git ~/tari
 cd ~/tari
 ./tari.bash --check-remotes
 ```
@@ -478,7 +478,7 @@ bindings found`; the build ends with `Summary: 41 packages finished`.
 >     cd ~/tari/dgpython-nidaqmx && SETUPTOOLS_USE_DISTUTILS=stdlib \
 >         python3 -m pip wheel --no-deps --no-build-isolation -w /tmp/wheelcheck .
 
-### 6. Layer `site` — our cells and calibration
+### 6. Layer `site` — cells and calibration
 
 ```bash
 cd ~/tari
@@ -717,8 +717,7 @@ ordinary Python distributions, not ROS packages, and colcon never touches them.
 The one exception is `dgpython-ros2motion`, which *is* a set of ROS packages,
 lives in `ros_ws/src`, and is built by colcon — do not pip install any part of
 it. A package built by both ends up on `PYTHONPATH` twice with the colcon copy
-shadowing the other, so you edit one and run the other. That has cost this
-project real time, twice.
+shadowing the other, so you edit one and run the other.
 
 `dgpy_install.sh` refuses to install anything carrying a `package.xml`, which
 makes the mistake impossible rather than merely documented.
@@ -783,7 +782,7 @@ removed, and then installs normally. Nothing has to be done by hand.
 the source has uncommitted changes, so no installed copy can be *known* to match
 it — which is exactly what you want to hear on a development or cell machine, and
 is why `--check` fails on it and why `tari.bash --phase verify` passes no flag.
-It is not true in the container image build, which copies a tree in and installs
+It is not true in a container image build, which copies a tree in and installs
 from that same tree seconds later: there the installed copy is known to match,
 uncommitted changes and all, and failing on it would mean no image could be built
 while anyone had uncommitted work in any of the nine packages. That build alone
@@ -948,9 +947,9 @@ fails with a bare `c++: fatal error: Killed signal terminated program`.
 
 A cell manifest is data: the robot's IP, which sensors are physically present,
 which are welded into the robot description, the topic names per mode, and the
-work volume. Ours live in `tari_cell_configs` in the private `tari_site`
-repository and are found through `TARI_CELL_PATH`, which `--phase env` writes for
-the `site` layer only.
+work volume. A site keeps them in `tari_cell_configs`, inside its own site
+repository (the public `site_example` shows the layout), and they are found
+through `TARI_CELL_PATH`, which `--phase env` writes for the `site` layer only.
 
 ```bash
 ros2 run tari_bringup tari_cell_info --cell ex-ur10e-1 --mode hardware
@@ -970,8 +969,7 @@ without editing shared code. Nothing forks.
 
 If something about your cell cannot be expressed in the manifest, that is a gap in
 `tari_bringup` and worth fixing there — it is not a reason to copy a launch file,
-which is how this project ended up with several divergent uncommitted cells in the
-first place.
+which is how divergent copies of one cell come to exist.
 
 ---
 
@@ -1017,11 +1015,11 @@ These are things a correct, complete bootstrap still does not give you on Ubuntu
   all of the above returns at once; `sudo python3 -m pip install
   'setuptools>=64,<80'` is the repair.
 
-  **Unless it is in your own home, in which case `sudo` cannot reach it.** The
-  first cell run carried `setuptools` 84.0.0 in
-  `/home/lesthatj/.local/lib/python3.10/site-packages`. The python phase pinned
-  the system copy as designed, the user site directory still precedes it on
-  `sys.path`, and the colcon build that followed loaded 84 anyway — visible in
+  **Unless it is in your own home, in which case `sudo` cannot reach it.** A
+  machine can carry `setuptools` 84.0.0 in
+  `~/.local/lib/python3.10/site-packages`. The python phase pins
+  the system copy as designed, but the user site directory still precedes it on
+  `sys.path`, and the colcon build that follows loads 84 anyway — visible in
   its own stderr as
   `.local/lib/python3.10/site-packages/setuptools/_distutils`. So the prereqs
   phase now prints **where** `setuptools` was found, and when that is your home

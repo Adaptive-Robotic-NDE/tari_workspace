@@ -3,7 +3,8 @@
 NORMS/EASEL documents a measurement from the files it finds and the forms the
 operator fills in; a plug-in is the only path by which anything inside the data
 files reaches that record. EASEL starts it BY ABSOLUTE PATH with no shell, so it
-has to land at a fixed location on the cell rather than stay in a checkout.
+has to land at a fixed location on the acquisition machine rather than stay in
+a checkout.
 
 Everything here is driven through tari.bash's own --dry-run, so nothing is
 installed and no privilege is used. The failure modes being guarded are all
@@ -51,7 +52,7 @@ def test_the_site_layer_installs_it(empty_dest):
 
 
 def test_no_other_layer_installs_it(empty_dest):
-    """A cell takes eddy-current scans; a simulation workstation does not, and
+    """A site takes eddy-current scans; a simulation workstation does not, and
     a plug-in on it would be a file nobody can explain later."""
     for layer in ("sim", "acq", "hw"):
         out = build_phase(layer, empty_dest)

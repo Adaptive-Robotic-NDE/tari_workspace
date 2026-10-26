@@ -1,8 +1,8 @@
 # Build context for container/images/ros2-iron-jammy/Dockerfile.
 #
-# THE CONTEXT IS THIS WORKSPACE, AND THIS WORKSPACE IS 27 GB. scandata alone is
-# 16 GB, ros_ws 5 GB, and spatialnde2's two build directories another 5 GB --
-# none of which the image wants. So this is an ALLOWLIST: exclude everything,
+# THE CONTEXT IS THE WHOLE WORKING ROOT, WHICH CAN REACH 27 GB: scandata alone
+# can be 16 GB, ros_ws 5 GB, and spatialnde2's two build directories another
+# 5 GB -- none of which the image wants. So this is an ALLOWLIST: exclude everything,
 # then name the handful of things the final layer installs. A denylist would
 # have to be updated every time the workspace grew a new large directory, and
 # the failure mode of forgetting is a multi-gigabyte context rather than an

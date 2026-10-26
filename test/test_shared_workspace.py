@@ -1,16 +1,16 @@
 """A workspace in someone else's home, driven by whichever human is logged in.
 
-The robot runs as an unprivileged shared account (`labuser` on the cell), so
-the workspace lives in that account's home -- but labuser has no sudo and
-almost every phase needs it, so the person who runs the script is a named
-account with sudo, operating on a tree another account owns and that the whole
-`labusers` group has to be able to rewrite tomorrow. The directories carry the
-setgid bit so new files inherit the group.
+The robot can run as an unprivileged shared account (`labuser` in these
+examples), so the workspace lives in that account's home -- but labuser has no
+sudo and almost every phase needs it, so the person who runs the script is a
+named account with sudo, operating on a tree another account owns and that the
+whole `labusers` group has to be able to rewrite tomorrow. The directories
+carry the setgid bit so new files inherit the group.
 
 Setgid gives the GROUP, not group WRITE: the mode comes from the creating
-process's umask, and the default 022 produces `-rw-r--r-- lesthatj labusers`,
-which nobody else in the group can write, truncate or chmod. The first cell run
-died of exactly that, twice over, and neither failure named ownership:
+process's umask, and the default 022 produces `-rw-r--r-- alice labusers`,
+which nobody else in the group can write, truncate or chmod. A first run on
+such a machine fails twice over, and neither failure names ownership:
 
   * the python phase, where `sudo pip install .` makes setuptools_scm run git
     as root over labuser's checkout:
@@ -19,17 +19,18 @@ died of exactly that, twice over, and neither failure named ownership:
                '/home/labuser/tari/dgpython-opencv-camera'
         error: metadata-generation-failed
 
-  * the build phase, where ros_ws/build and ros_ws/install were full of another
+  * the build phase, where ros_ws/build and ros_ws/install fill with another
     account's 0644 files:
 
         CMake Error ... (configure_file): Operation not permitted
         PermissionError: [Errno 13] ... install/.../package.dsv
 
-    seven packages failed and seventeen aborted behind them.
+    in one observed build, seven packages failed and seventeen aborted behind
+    them.
 
-Both were worked around on the machine by hand -- `sudo git config --global
---add safe.directory "*"`, then `sudo chown -R`, then `rm -rf build install`.
-The tests here are about the script not needing that next time.
+The by-hand workarounds are `sudo git config --global --add safe.directory
+"*"`, then `sudo chown -R`, then `rm -rf build install`. The tests here are
+about the script not needing them.
 
 Nothing here installs anything, builds anything or touches the network.
 
@@ -260,8 +261,7 @@ def test_the_installers_dry_run_shows_the_safe_directory_env():
 # ---------------------------------------------------------------------------
 # 4. The policy itself: one group, setgid, and a umask that leaves group write.
 #
-# Two out of three is the state the cell was in, and it looks like it works
-# until a second person builds. What CANNOT be tested here is the warning
+# Two out of three looks like it works until a second person builds. What CANNOT be tested here is the warning
 # itself: triggering it needs a workspace whose top-level entries have two
 # different owners, and creating a file owned by another account needs root.
 # So the silent path is measured, the loud path is read.

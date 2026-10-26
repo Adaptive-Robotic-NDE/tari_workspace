@@ -1,18 +1,19 @@
 """CRLF: 224 files that looked like eleven people's work in progress.
 
-The first run of tari.bash on the cell warned that eleven checkouts under
-ros_ws/src had uncommitted changes and printed 224 `M <path>` lines. Every one
-of those paths ends in `.py`, across eleven unrelated repositories, including
+A first run of tari.bash once warned that eleven checkouts under ros_ws/src had
+uncommitted changes and printed 224 `M <path>` lines. Every one of those paths
+ended in `.py`, across eleven unrelated repositories, including
 generated files nobody edits -- test_copyright.py, test_flake8.py,
 test_pep257.py, setup.py -- and there is not one .xml, .yaml, .xacro or .cmake
 among them. That is not work in progress; it is a mechanical rewrite of one
 file type, which is what a Windows SFTP client in automatic/text transfer mode
-does to the extensions on its text list. These trees reach the cell by hand
-copy from a Windows workstation, so that is the route.
+does to the extensions on its text list. Trees copied by hand from a Windows
+workstation take that route.
 
-What it cost: the operator could not tell line-ending noise from real edits, so
-`--discard-local-changes` was the only way past the warning, and it threw away
-both kinds. Every assertion here is about keeping those two things apart.
+The consequence: an operator cannot tell line-ending noise from real edits, so
+`--discard-local-changes` would be the only way past the warning, and it would
+throw away both kinds. Every assertion here is about keeping those two things
+apart.
 
 The mechanism, measured on a scratch repository:
 
@@ -91,7 +92,7 @@ def test_gitattributes_pins_the_line_endings():
     """So a checkout on a Windows client cannot reintroduce what 1 forbids.
 
     Without this the next person with core.autocrlf=true gets a CRLF working
-    tree, every file reads as modified, and we are back at 224 diffs.
+    tree, every file reads as modified, and the 224 diffs return.
     """
     path = os.path.join(ROOT, ".gitattributes")
     assert os.path.exists(path), (

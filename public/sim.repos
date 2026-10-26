@@ -9,7 +9,7 @@
 # out below, with the reason.
 #
 #
-# This is the collaborator deliverable: everything needed to bring up the cell
+# This is the collaborator deliverable: everything needed to bring up a cell
 # in Gazebo, plan a toolpath, reconstruct a surface, detect a part and MOVE THE
 # ARM. It references no private repository and needs no hardware, no vendor SDK
 # and no credentials beyond public GitHub.
@@ -25,8 +25,8 @@
 # WHY dgpython-ros2motion IS IN THIS LAYER AND NOT IN acq: tari_bringup starts
 # TWO action servers for every scan -- mtc_node from tari_cpp_mtc, and
 # dgpython_action_server from dgpython_ros2_actionserver. Without the second
-# one the cell plans and never executes, which is not a simulation anybody can
-# work with. All four of its packages are built by colcon; the two that are
+# one the system plans and never executes, which is not a simulation anybody
+# can work with. All four of its packages are built by colcon; the two that are
 # dataguzzler-python modules simply are not importable until the acq layer
 # installs dataguzzler-python, and colcon builds them fine regardless.
 #
@@ -40,18 +40,18 @@
 # tari_bringup/test/test_description_dependencies.py checks every package a cell
 # manifest launches, and needs no ROS to run.
 #
-# Version policy: our own repositories track a branch, because they are under
-# active development and pinning them would mean a manifest commit per change.
-# Third-party repositories are pinned to the exact commit that is known to
-# build here.
+# Version policy: this organisation's own repositories track a branch, because
+# they are under active development and pinning them would mean a manifest
+# commit per change. Third-party repositories are pinned to the exact commit
+# that is known to build.
 
 repositories:
 
-  # ---- ours -------------------------------------------------------------
-  # `_staging` marks a private repository for internal development that is not
-  # yet ready for public release; a CI/CD pipeline will be responsible for
-  # promoting to public. The checkout path drops the suffix, so the working
-  # tree is named for the package set rather than for its release state.
+  # ---- first party ------------------------------------------------------
+  # `_staging` marks the private form of a repository whose published form has
+  # the same name without the suffix. The checkout path drops the suffix, so the
+  # working tree is named for the package set rather than for its release
+  # state.
   ros_ws/src/tari_ros:
     type: git
     url: https://github.com/Adaptive-Robotic-NDE/tari_ros.git
@@ -62,15 +62,15 @@ repositories:
     url: https://github.com/Adaptive-Robotic-NDE/dgpython-ros2motion.git
     version: iron
 
-  # ---- our forks of upstream --------------------------------------------
+  # ---- forks of upstream ------------------------------------------------
   # Each carries local commits on a `tari/iron` branch, each labelled with an
   # Upstream-Status trailer saying whether it is headed upstream or not.
   #
-  # These are ordinary private repositories rather than GitHub forks, and that
-  # is deliberate: a fork of a public repository cannot be made private, so a
-  # real fork would defeat the `_staging` convention entirely. Each checkout
-  # keeps the true upstream as a second remote named `upstream`, which is what
-  # makes it possible to fetch upstream later and check whether our commits
+  # These are ordinary repositories rather than GitHub forks, and that is
+  # deliberate: a fork of a public repository cannot be made private, so a real
+  # fork would defeat the `_staging` convention entirely. Each checkout keeps
+  # the true upstream as a second remote named `upstream`, which is what makes
+  # it possible to fetch upstream later and check whether the local commits
   # still apply (rot) or have been merged (drop them).
 
   ros_ws/src/moveit_task_constructor:
@@ -128,8 +128,7 @@ repositories:
   # ---- deliberately omitted ---------------------------------------------
   # realsense_gazebo_plugin simulates a D415. Every cell manifest currently
   # sets `d415: present: false`, so nothing starts it and nothing needs it in
-  # the robot description. It is a checkout in the tree today purely because an
-  # older bootstrap cloned it. Uncomment if a cell ever gains a D415.
+  # the robot description. Uncomment if a cell ever gains a D415.
   #
   # ros_ws/src/realsense_gazebo_plugin:
   #   type: git

@@ -1,11 +1,11 @@
 # Line endings, pinned.
 #
-# These trees reach the cell PC by hand copy from a Windows workstation, and a
-# copy through an SFTP client in automatic/text mode rewrites whatever is on
-# that client's text-extension list. The first cell bootstrap arrived with 224
-# .py files rewritten to CRLF across eleven repositories, every one of which
-# then read as an uncommitted change -- and the only way past the warning threw
-# them all away, real edits included.
+# Trees copied by hand from a Windows workstation to a deployment machine can
+# pass through an SFTP client in automatic/text mode, which rewrites whatever is
+# on that client's text-extension list. One such copy arrived with 224 .py files
+# rewritten to CRLF across eleven repositories, every one of which then read as
+# an uncommitted change -- and the only way past the warning threw them all
+# away, real edits included.
 #
 # `eol=lf` is the half that matters: it makes git write LF into the WORKING
 # TREE no matter what core.autocrlf or core.eol say locally, so a checkout here

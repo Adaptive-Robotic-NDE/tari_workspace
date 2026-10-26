@@ -16,8 +16,8 @@
 # -- and tari.bash imports those, never this one. This exists for the case
 # where you want everything at once and do not care about layering.
 #
-# It had drifted: it named a repository that does not exist, pointed several
-# packages at different remotes than the layers do, and pinned different
+# An aggregate drifts easily -- it can name a repository that does not exist,
+# point packages at different remotes than the layers do, or pin different
 # branches. Regenerate it rather than editing it by hand:
 #
 #     ./tari.bash --check-remotes      # verifies the layers, not this file

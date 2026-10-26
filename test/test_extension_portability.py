@@ -54,7 +54,7 @@ MSVC_ONLY = (
 )
 
 # What a branch has to test for, for an MSVC flag inside it to be conditional.
-# Covers both spellings this workspace uses: `sys.platform.startswith("win")`
+# Covers both spellings this repository uses: `sys.platform.startswith("win")`
 # and a boolean named for the compiler.
 PLATFORM_MARKERS = ("win", "msvc", "msc", "nt", "cygwin")
 
@@ -284,7 +284,7 @@ def test_the_checks_above_actually_catch_something():
     assert names == ["opencv_core460", "opencv_calib3d460"], names
 
     # ... and the same flags inside a platform branch are fine, in both of the
-    # spellings this workspace uses.
+    # spellings this repository uses.
     for guard in ('if sys.platform.startswith("win"):', "if msvc:"):
         conditional = guard + "\n    args = ['/Od', '/Zi']\n"
         assert not unconditional_msvc_flags(conditional), guard

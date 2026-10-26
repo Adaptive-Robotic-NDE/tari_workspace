@@ -1,7 +1,7 @@
 #!/bin/bash
 # The container lives in its own repository, checked out at <workspace>/container,
 # so that a machine which only needs to rebuild the image needs nothing else.
-# This forwards to it, because the old path is in muscle memory and in several
+# This forwards to it, because the old path is still referenced by existing
 # procedures; keeping two copies of the real script is how they drift apart.
 set -e
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

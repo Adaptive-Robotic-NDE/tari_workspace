@@ -17,9 +17,10 @@ HOW IT TRANSFORMS. Line by line, so every comment in the source manifest
 survives into the public one -- those comments are most of the value of these
 files, and regenerating from parsed YAML would throw them all away.
 
-  * `git@github.com:ORG/NAME_staging.git` -> `https://github.com/ORG/NAME.git`
-    The _staging suffix is the private side of the mirror pipeline; dropping it
-    is the same rule the publish workflow uses to find its destination.
+  * `git@github.com:ORG/NAME<suffix>.git` -> `https://github.com/ORG/NAME.git`
+    where the suffix is `_staging`, the private side of the mirror pipeline;
+    dropping it is the same rule the publish workflow uses to find its
+    destination.
   * `git@github.com:ORG/NAME.git` -> `https://github.com/ORG/NAME.git`
     Already public; it only needs a scheme a stranger can use.
   * `https://...` -> unchanged. Third-party upstreams.
@@ -75,7 +76,7 @@ PUBLIC_SUBSTITUTE = {
 #: (public repo, private version) -> public version, where the branch is named
 #: differently on the public side. Anything not listed keeps its version.
 VERSION_MAP = {
-    # The forks carry our work on tari/iron and publish it as iron.
+    # The forks carry local work on tari/iron and publish it as iron.
     ("Adaptive-Robotic-NDE/noether", "tari/iron"): "iron",
     ("Adaptive-Robotic-NDE/moveit_task_constructor", "tari/iron"): "iron",
     ("Adaptive-Robotic-NDE/yolo_ros", "tari/iron"): "iron",

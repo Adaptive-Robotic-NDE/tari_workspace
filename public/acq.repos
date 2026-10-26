@@ -28,10 +28,10 @@
 # set of ROS packages, lives in ros_ws/src, is built by colcon, and is imported
 # by sim.repos. Do not pip install any part of it.
 #
-# spatialnde2 and dataguzzler-python belong to isuthermography -- a
-# collaboration with Iowa State rather than a repository this org controls.
-# They are shareable, and they are also under active development here; expect
-# to be changing them.
+# spatialnde2 and dataguzzler-python belong to isuthermography -- an external
+# collaboration rather than a repository this organisation controls. They are
+# shareable, and they are also under active development alongside this
+# workspace; expect to be changing them.
 
 repositories:
 
@@ -50,8 +50,7 @@ repositories:
 
   dgpython-param-manager:
     type: git
-    # PERSONAL REMOTE. Should move to the org before this manifest is handed
-    # to anyone outside it.
+    # Hosted under an individual's account rather than the organisation's.
     url: https://github.com/lesthaeghet/dgpython-param-manager.git
     version: master
 

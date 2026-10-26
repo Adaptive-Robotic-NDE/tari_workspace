@@ -137,7 +137,7 @@ def test_a_second_run_refetches_nothing(tmp_path):
 
 
 def test_a_failed_clone_leaves_nothing_behind_and_the_rerun_succeeds(tmp_path):
-    """The empty-directory trap, which cost the python phase four packages.
+    """The empty-directory trap, which left the python phase four packages short.
 
     `vcs import` created the target directory and then failed to clone into it,
     so dgpy_install.sh found a directory with no setup.py and reported
@@ -525,9 +525,9 @@ def test_resync_alone_refuses_to_discard_uncommitted_work(tmp_path):
 def test_discard_local_changes_does_discard_them(tmp_path):
     """...with --yes. A REAL edit takes both flags; see test_line_endings.py.
 
-    The second flag was added after the first cell run, where 224 line-ending
-    diffs and whatever real edits were among them were discarded together
-    because nothing distinguished them.
+    The second flag exists because 224 line-ending diffs and whatever real
+    edits were among them were once discarded together, with nothing to
+    distinguish them.
     """
     origin = tmp_path / "origin"
     make_origin(str(origin))
@@ -586,8 +586,8 @@ def test_without_resync_a_left_alone_repo_is_summarised_loudly(tmp_path):
 # ---------------------------------------------------------------------------
 # 6. A submodule pointer, which `reset --hard` does not fix.
 #
-# The cell log shows moveit_task_constructor reported as having uncommitted
-# changes, discarded under --discard-local-changes, and then reported again
+# A run once reported moveit_task_constructor as having uncommitted changes,
+# discarded them under --discard-local-changes, and then reported it again
 # with the same single entry on the very next invocation:
 #
 #     warning: ros_ws/src/moveit_task_constructor: DISCARDING uncommitted
