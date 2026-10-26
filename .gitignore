@@ -29,11 +29,15 @@
 !site.repos
 !workspace.repos
 
-# --- who approves a release ------------------------------------------------
-# Names the reviewer GitHub requires on a pull request into a cleared_* branch,
-# which is what publishes to the public mirror.
+# --- how a release happens, and who approves it ----------------------------
+# CODEOWNERS names the reviewer GitHub requires on a pull request into a
+# cleared_* branch; the workflow is what publishes to the public mirror when
+# such a pull request is merged. Both have to be TRACKED to do anything at
+# all, which this whitelist would otherwise prevent.
 !.github/
 !.github/CODEOWNERS
+!.github/workflows/
+!.github/workflows/push-to-public.yml
 
 # --- the public form of the same manifests ---------------------------------
 # What somebody outside the organisation builds from: the public mirrors over
