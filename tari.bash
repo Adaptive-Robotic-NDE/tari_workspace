@@ -288,9 +288,17 @@ if [[ $PUBLIC -eq 1 ]]; then
    which is published. The highest public layer is hw."
     fi
     if [[ "${LAYER:-}" == "hw" ]]; then
-        warn "the public hw layer has no eddy-current instrument driver"
-        warn "(dgpython-uniwest is a vendor driver and is not published)."
-        warn "Everything else in the layer is there."
+        note "The public hw layer has no eddy-current instrument driver:"
+        note "dgpython-uniwest is a vendor driver and is not ours to publish."
+        note "Use the SIMULATED instrument instead. It is an environment"
+        note "variable, not an edit:"
+        note "    EC_SOURCE=sim dataguzzler-python dgpfiles/ECAutomatedScan.dgp"
+        note "That runs the scan end to end against sim_ec_source.dpi. Adding"
+        note "EC_TABLE and EC_PLATE drives it from a modelled response table"
+        note "instead of a synthetic signal; a table ships in test_data:"
+        note "    EC_SOURCE=sim EC_TABLE=<...>/al6061_2mhz_response.h5 \\"
+        note "        EC_PLATE=<...>/flaws.json dataguzzler-python ..."
+        note "Everything else in the layer is present and real."
     fi
 fi
 

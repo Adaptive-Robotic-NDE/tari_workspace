@@ -109,6 +109,56 @@ def test_nothing_is_silently_dropped(name):
             "%s: a withheld entry has no reason attached" % (name,))
 
 
+#: The two libraries the whole stack is built on. Publicly they must come from
+#: the public repository on master -- never the _staging mirror, and never
+#: develop, which is spatialnde2's default branch and is not what is released.
+CORE_LIBRARIES = {
+    "spatialnde2": ("https://github.com/isuthermography/spatialnde2.git", "master"),
+    "dataguzzler-python":
+        ("https://github.com/isuthermography/dataguzzler-python.git", "master"),
+}
+
+
+def _entries(path):
+    """{name: (url, version)} for the active entries of a manifest."""
+    out, name, url, ver = {}, None, None, None
+    for line in open(path):
+        if line.lstrip().startswith("#"):
+            continue
+        m = re.match(r"^  (\S[^:]*):\s*$", line)
+        if m:
+            if name and url:
+                out[name.split("/")[-1]] = (url, ver)
+            name, url, ver = m.group(1), None, None
+            continue
+        mu, mv = ACTIVE_URL.match(line), ACTIVE_VER.match(line)
+        if mu:
+            url = mu.group(1)
+        if mv:
+            ver = mv.group(1)
+    if name and url:
+        out[name.split("/")[-1]] = (url, ver)
+    return out
+
+
+@pytest.mark.parametrize("name", manifests())
+def test_core_libraries_are_public_and_on_master(name):
+    """spatialnde2 and dataguzzler-python: public repo, master branch.
+
+    These are the two libraries everything else is built on, so getting them
+    from the wrong place or the wrong branch gives a public user a stack that
+    is subtly not the one this workspace is developed against.
+    """
+    got = _entries(os.path.join(PUBLIC, name))
+    for lib, (want_url, want_ver) in CORE_LIBRARIES.items():
+        if lib not in got:
+            continue
+        url, ver = got[lib]
+        assert url == want_url, "%s: %s points at %s, want %s" % (name, lib, url, want_url)
+        assert ver == want_ver, "%s: %s pinned to %r, want %r" % (name, lib, ver, want_ver)
+        assert ver != "develop", "%s: %s must not track develop publicly" % (name, lib)
+
+
 def test_site_layer_is_refused_publicly():
     """Both of site's repositories are private; the layer cannot work."""
     r = subprocess.run(["bash", os.path.join(ROOT, "tari.bash"),

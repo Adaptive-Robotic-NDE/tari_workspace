@@ -30,6 +30,12 @@
 !site.repos
 !workspace.repos
 
+# --- who approves a release ------------------------------------------------
+# Names the reviewer GitHub requires on a pull request into a cleared_* branch,
+# which is what publishes to the public mirror.
+!.github/
+!.github/CODEOWNERS
+
 # --- the public form of the same manifests ---------------------------------
 # What somebody outside the organisation builds from: the public mirrors over
 # HTTPS, no account and no SSH key. Generated from the manifests above by
