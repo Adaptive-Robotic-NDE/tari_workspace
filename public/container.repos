@@ -1,0 +1,33 @@
+# container.repos -- the development container. Import FIRST.
+#
+# GENERATED FILE -- do not edit. Produced from ../container.repos by
+# tools/make_public_manifests.py. Edit that manifest and regenerate.
+#
+# This is the public form: it names the public mirrors over HTTPS, so it
+# needs no GitHub account, no SSH key and no membership of any
+# organisation. Repositories with no public counterpart are commented
+# out below, with the reason.
+#
+#
+#     vcs import < container.repos
+#
+# The ROS 2 stack targets Ubuntu 22.04 and the development host does not have
+# to be Ubuntu, so everything importing rclpy runs inside a container. This is
+# the layer that builds and runs it; every other layer is source that gets
+# mounted into it.
+#
+# One repository, holding both image definitions and the lifecycle script:
+#
+#     container/ros2_docker.sh build     both images, base first
+#     container/ros2_docker.sh start     create and start it
+#     container/ros2_docker.sh shell     a shell inside, as 'user'
+#
+# It is imported first because nothing below it can be built or run without it,
+# and it is deliberately separable: a machine that only needs to rebuild the
+# image needs this repository and nothing else.
+
+repositories:
+  container:
+    type: git
+    url: https://github.com/Adaptive-Robotic-NDE/tari_container.git
+    version: iron

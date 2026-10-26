@@ -1,0 +1,95 @@
+# hw.repos -- instrument drivers. Import AFTER sim.repos and acq.repos.
+#
+#     vcs import < sim.repos && vcs import < acq.repos && vcs import < hw.repos
+#
+# Nothing here is secret and nothing here is useful without the devices. It is
+# a separate layer rather than part of acq because it pulls in two vendor SDKs
+# that apt cannot supply on its own, and because a collaborator running a
+# simulation has no use for any of it.
+#
+# TWO DEPENDENCIES ARE INVISIBLE TO ROSDEP and must be installed by hand. Both
+# are called out by `tari.bash --layer hw`, which stops rather than building a
+# driver without its SDK:
+#
+#   * libk4a (Azure Kinect Sensor SDK) from packages.microsoft.com. It is a
+#     hard dependency of azure_kinect_ros_driver and requires accepting a
+#     licence, so it cannot be automated.
+#   * NI-DAQmx from National Instruments, for dgpython-nidaqmx. Proprietary,
+#     x86-64 only.
+
+repositories:
+
+  # ---- ROS driver packages ----------------------------------------------
+  # Microsoft's C++ Azure Kinect driver, and the only Azure driver the cells
+  # start. NOTHING IN THE SIM LAYER DEPENDS ON IT. The camera's body meshes used
+  # to be read out of it by the robot description, which made the description
+  # unrenderable without this package -- including in simulation, where there is
+  # no driver to run. tari_ur_description carries its own copies now, and
+  # tari_bringup/test/test_description_dependencies.py fails if a description a
+  # cell launches reaches across a layer again.
+  ros_ws/src/azure_kinect_ros_driver:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/azure_kinect_ros_driver_staging.git
+    version: main
+
+  ros_ws/src/keyence_experimental:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/keyence_experimental_staging.git
+    version: iron
+
+  # keyence_experimental does not build without this package: it generates
+  # ChangeProgram.srv. It is published nowhere upstream.
+  ros_ws/src/keyence_interfaces:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/keyence_interfaces_staging.git
+    version: iron
+
+  # A pyk4a/numba Azure driver, and the ORIGIN of the Azure xacro macro and its
+  # mount meshes. Its absence made `launch_azure:=true` fail at xacro time with
+  # PackageNotFoundError, which is why separate hand-rolled replacements for the
+  # macro appeared in more than one installation.
+  #
+  # NOTHING IN THE SIM LAYER DEPENDS ON IT and nothing should: the robot
+  # description carries the macro itself, so a machine with no Azure SDK still
+  # builds and still simulates. The driver NODE is what lives here, and it
+  # needs libk4a plus pyk4a and numba (requirements.txt) to run at all. A cell
+  # starts Microsoft's C++ azure_kinect_ros_driver today; this is an
+  # alternative implementation, kept for provenance as much as for use.
+  #
+  ros_ws/src/azure_kinect_python_ros2_driver:
+    type: git
+    url: git@github.com:Adaptive-Robotic-NDE/azure_kinect_python_ros2_driver_staging.git
+    version: iron
+
+  ros_ws/src/libsocket:
+    type: git
+    url: https://github.com/dermesser/libsocket.git
+    version: 6214af728874b98055eefed293274540d98f6568
+
+  # ---- dataguzzler-python instrument modules ----------------------------
+  # Installed by dgpy_install.sh, not by colcon.
+
+  dgpython-azurekinect:
+    type: git
+    url: git@github.com:isuthermography/dgpython-azurekinect_staging.git
+    version: master
+
+  dgpython-nidaqmx:
+    type: git
+    # Hosted under an individual's account rather than the organisation's.
+    url: git@github.com:lesthaeghet/dgpython-nidaqmx.git
+    version: master
+
+  dgpython-uniwest:
+    type: git
+    # Dashes in the repository name and underscores in the package name is the
+    # dataguzzler convention, and is why this is not renamed the way the ROS
+    # packages were.
+    url: git@github.com:Adaptive-Robotic-NDE/dgpython-uniwest_private.git
+    version: master
+
+  dgpython-opencv-camera:
+    type: git
+    # Hosted under an individual's account rather than the organisation's.
+    url: git@github.com:lesthaeghet/dgpython-opencv-camera.git
+    version: master

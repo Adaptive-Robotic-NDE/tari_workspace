@@ -1,0 +1,136 @@
+# sim.repos -- the shareable simulation layer.
+#
+# GENERATED FILE -- do not edit. Produced from ../sim.repos by
+# tools/make_public_manifests.py. Edit that manifest and regenerate.
+#
+# This is the public form: it names the public mirrors over HTTPS, so it
+# needs no GitHub account, no SSH key and no membership of any
+# organisation. Repositories with no public counterpart are commented
+# out below, with the reason.
+#
+#
+# This is the collaborator deliverable: everything needed to bring up a cell
+# in Gazebo, plan a toolpath, reconstruct a surface, detect a part and MOVE THE
+# ARM. It references no private repository and needs no hardware, no vendor SDK
+# and no credentials beyond public GitHub.
+#
+# Import from the WORKSPACE ROOT, not from ros_ws/src -- the later layers place
+# repositories on both sides of ros_ws, and keeping one base directory is what
+# lets the layers stack:
+#
+#     vcs import < sim.repos
+#
+# `tari.bash --layer sim` does this and the rest of the bootstrap for you.
+#
+# WHY dgpython-ros2motion IS IN THIS LAYER AND NOT IN acq: tari_bringup starts
+# TWO action servers for every scan -- mtc_node from tari_cpp_mtc, and
+# dgpython_action_server from dgpython_ros2_actionserver. Without the second
+# one the system plans and never executes, which is not a simulation anybody
+# can work with. All four of its packages are built by colcon; the two that are
+# dataguzzler-python modules simply are not importable until the acq layer
+# installs dataguzzler-python, and colcon builds them fine regardless.
+#
+# SELF-CONTAINED MEANS THE ROBOT DESCRIPTION TOO, and that is the half that is
+# easy to lose. A `$(find <package>)` in a xacro is resolved every time the
+# description is rendered, so a mesh or an include reaching into a hardware-layer
+# package does not degrade gracefully: xacro raises PackageNotFoundError and
+# Gazebo, MoveIt and move_group never start. Gating the include is not enough,
+# because a reference inside the file the gate lets in resolves whenever the gate
+# is open, and the shipped sim cell opens the Azure gate.
+# tari_bringup/test/test_description_dependencies.py checks every package a cell
+# manifest launches, and needs no ROS to run.
+#
+# Version policy: this organisation's own repositories track a branch, because
+# they are under active development and pinning them would mean a manifest
+# commit per change. Third-party repositories are pinned to the exact commit
+# that is known to build.
+
+repositories:
+
+  # ---- first party ------------------------------------------------------
+  # `_staging` marks the private form of a repository whose published form has
+  # the same name without the suffix. The checkout path drops the suffix, so the
+  # working tree is named for the package set rather than for its release
+  # state.
+  ros_ws/src/tari_ros:
+    type: git
+    url: https://github.com/Adaptive-Robotic-NDE/tari_ros.git
+    version: iron
+
+  ros_ws/src/dgpython-ros2motion:
+    type: git
+    url: https://github.com/Adaptive-Robotic-NDE/dgpython-ros2motion.git
+    version: iron
+
+  # ---- forks of upstream ------------------------------------------------
+  # Each carries local commits on a `tari/iron` branch, each labelled with an
+  # Upstream-Status trailer saying whether it is headed upstream or not.
+  #
+  # These are ordinary repositories rather than GitHub forks, and that is
+  # deliberate: a fork of a public repository cannot be made private, so a real
+  # fork would defeat the `_staging` convention entirely. Each checkout keeps
+  # the true upstream as a second remote named `upstream`, which is what makes
+  # it possible to fetch upstream later and check whether the local commits
+  # still apply (rot) or have been merged (drop them).
+
+  ros_ws/src/moveit_task_constructor:
+    type: git
+    # tari/iron = upstream 77706427 + "CurrentState: bound the whole of
+    # compute()", without which a get_planning_scene that never answers wedges
+    # the planning thread permanently.
+    # upstream: https://github.com/moveit/moveit_task_constructor.git (iron)
+    url: https://github.com/Adaptive-Robotic-NDE/moveit_task_constructor.git
+    version: iron
+
+  ros_ws/src/industrial_reconstruction:
+    type: git
+    # tari/iron = upstream 90fdc69 + tf_cache_time (without which a slow camera
+    # silently integrates nothing) + empty-mesh guards (without which an empty
+    # crop kills the node inside a service callback).
+    # upstream: https://github.com/ros-industrial/industrial_reconstruction.git (main)
+    url: https://github.com/Adaptive-Robotic-NDE/industrial_reconstruction.git
+    version: iron
+
+  ros_ws/src/yolo_ros:
+    type: git
+    # tari/iron = upstream 5633e3b + "skip uv sync when the dependencies already
+    # import", without which a missing `uv` raises out of
+    # generate_launch_description() and takes down the entire bring-up.
+    # upstream: https://github.com/mgonzs13/yolo_ros.git (main)
+    url: https://github.com/Adaptive-Robotic-NDE/yolo_ros.git
+    version: iron
+
+  ros_ws/src/noether:
+    type: git
+    # tari/iron = upstream e64b330 (tag 0.16.0) + the min/max fix in
+    # getDistancesToMinMaxCuts, where the two comparisons were chained with
+    # `else if` so a corner that raised d_max could not also lower d_min --
+    # feed the OBB corners in ascending order and d_min keeps its DBL_MAX
+    # initialiser, which is what the plane count is computed from. Latent on
+    # every mesh measured so far, and it fires once on a mesh whose corners
+    # happen to arrive sorted.
+    # upstream: https://github.com/ros-industrial/noether.git (master)
+    url: https://github.com/Adaptive-Robotic-NDE/noether.git
+    version: iron
+
+  # ---- third party, unmodified ------------------------------------------
+
+  ros_ws/src/boost_plugin_loader:
+    type: git
+    url: https://github.com/tesseract-robotics/boost_plugin_loader.git
+    version: 0.4.3
+
+  ros_ws/src/ros_industrial_cmake_boilerplate:
+    type: git
+    url: https://github.com/ros-industrial/ros_industrial_cmake_boilerplate.git
+    version: 0.7.4
+
+  # ---- deliberately omitted ---------------------------------------------
+  # realsense_gazebo_plugin simulates a D415. Every cell manifest currently
+  # sets `d415: present: false`, so nothing starts it and nothing needs it in
+  # the robot description. Uncomment if a cell ever gains a D415.
+  #
+  # ros_ws/src/realsense_gazebo_plugin:
+  #   type: git
+  #   url: https://github.com/pal-robotics/realsense_gazebo_plugin.git
+  #   version: foxy-devel
