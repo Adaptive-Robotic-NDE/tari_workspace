@@ -24,17 +24,17 @@
 
 repositories:
 
-  # NOT AVAILABLE PUBLICLY -- ros_ws/src/tari_site
-  # per-cell manifests, calibration and site configuration -- specific to
-  # one physical cell and not useful or releasable
-  # The entry is left here, commented out, so it is clear that
-  # this piece exists and is deliberately absent.
-  # ros_ws/src/tari_site:
-  # type: git
-  # # `_private`, not `_staging`: this is not on a path to public release. The
-  # # checkout path drops the suffix, as everywhere else.
-  # url: git@github.com:Adaptive-Robotic-NDE/tari_site_private.git
-  # version: iron
+  # SUBSTITUTED -- Adaptive-Robotic-NDE/tari_site_private is not published.
+  # a real site layer describes one physical cell -- its arm's measured
+  # kinematics, the geometry around it, where each sensor sits -- so it
+  # cannot be published. This is a worked EXAMPLE in its place, with every
+  # installation-specific value replaced by a documented nominal and an
+  # instruction for measuring the real one. Read its README before pointing
+  # it at hardware.
+  ros_ws/src/site_example:
+    type: git
+    url: https://github.com/Adaptive-Robotic-NDE/site_example.git
+    version: iron
 
   # NOT AVAILABLE PUBLICLY -- ros_ws/src/csf_loader
   # restricted loader; not ours to redistribute

@@ -159,13 +159,31 @@ def test_core_libraries_are_public_and_on_master(name):
         assert ver != "develop", "%s: %s must not track develop publicly" % (name, lib)
 
 
-def test_site_layer_is_refused_publicly():
-    """Both of site's repositories are private; the layer cannot work."""
+def test_site_layer_publicly_is_the_example():
+    """The public site layer imports the worked example, not a real cell.
+
+    A real site layer describes one physical installation and is not published.
+    Withholding it entirely left a public reader with an empty layer and no
+    idea what belonged in it, so the public manifest substitutes the example.
+    """
+    got = _entries(os.path.join(PUBLIC, "site.repos"))
+    urls = [u for u, _v in got.values()]
+    assert any("site_example" in u for u in urls), \
+        "public site.repos should import site_example, got %s" % (urls,)
+    assert not any("tari_site" in u for u in urls), \
+        "public site.repos must not name a real site layer: %s" % (urls,)
+
+
+def test_site_layer_says_it_is_an_example():
+    """Importing it must say so: the difference matters at the hardware."""
     r = subprocess.run(["bash", os.path.join(ROOT, "tari.bash"),
-                        "--public", "--layer", "site"],
+                        "--public", "--layer", "site", "--phase", "env",
+                        "--dry-run"],
                        capture_output=True, text=True, cwd=ROOT)
-    assert r.returncode != 0, "--public --layer site should refuse"
-    assert "not available publicly" in (r.stdout + r.stderr)
+    out = r.stdout + r.stderr
+    assert "worked example" in out and "not a" in out, \
+        "--public --layer site should say it is an example, got:\n" + out[:400]
+    assert "README" in out, "it should send the reader to the example's README"
 
 
 def test_public_flag_reads_the_public_directory():

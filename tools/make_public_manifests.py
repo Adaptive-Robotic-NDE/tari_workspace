@@ -46,13 +46,30 @@ OUTDIR = os.path.join(ROOT, "public")
 #: Private repositories with no public mirror, and why. An entry here is
 #: commented out of the public manifest with its reason attached.
 NO_PUBLIC_COUNTERPART = {
-    "Adaptive-Robotic-NDE/tari_site_private":
-        "per-cell manifests, calibration and site configuration -- specific to "
-        "one physical cell and not useful or releasable",
     "Adaptive-Robotic-NDE/csf_loader_private":
         "restricted loader; not ours to redistribute",
     "Adaptive-Robotic-NDE/dgpython-uniwest_private":
         "vendor instrument driver; not ours to redistribute",
+}
+
+#: Private repositories that are REPLACED publicly by something else, rather
+#: than withheld: {private owner/name: (public owner/name, version, path, why)}.
+#: The site layer is the case this exists for. A real site layer describes one
+#: physical cell and cannot be published, but a reader who gets nothing there
+#: has no idea what belongs in it -- so the public manifest imports a worked
+#: example in its place.
+PUBLIC_SUBSTITUTE = {
+    "Adaptive-Robotic-NDE/tari_site_private": (
+        "Adaptive-Robotic-NDE/site_example",
+        "iron",
+        "ros_ws/src/site_example",
+        "a real site layer describes one physical cell -- its arm's measured "
+        "kinematics, the geometry around it, where each sensor sits -- so it "
+        "cannot be published. This is a worked EXAMPLE in its place, with every "
+        "installation-specific value replaced by a documented nominal and an "
+        "instruction for measuring the real one. Read its README before "
+        "pointing it at hardware.",
+    ),
 }
 
 #: (public repo, private version) -> public version, where the branch is named
@@ -142,6 +159,32 @@ def transform(text, source_name, notes):
                 ver = vm.group("ver")
         if url is None:
             raise Unmappable("%s: entry %r has no url" % (source_name, m.group("path")))
+
+        # Substituted before the withheld check: a replacement is not an absence.
+        owner_name = None
+        m_ssh = SSH_RE.match(url)
+        if m_ssh:
+            owner_name = "%s/%s" % (m_ssh.group("owner"), m_ssh.group("name"))
+        if owner_name in PUBLIC_SUBSTITUTE:
+            sub_repo, sub_ver, sub_path, why = PUBLIC_SUBSTITUTE[owner_name]
+            out.append("  # SUBSTITUTED -- %s is not published." % (owner_name,))
+            for chunk in _wrap(why, 72):
+                out.append("  # %s" % (chunk,))
+            out.append("  %s:" % (sub_path,))
+            for b in block[1:]:
+                um, vm = URL_LINE.match(b), VER_LINE.match(b)
+                if um:
+                    out.append("%surl: https://github.com/%s.git" % (um.group("indent"), sub_repo))
+                elif vm:
+                    out.append("%sversion: %s" % (vm.group("indent"), sub_ver))
+                elif b.strip().startswith("#"):
+                    continue          # the private entry's own commentary
+                else:
+                    out.append(b)
+            notes.append("%s: %s -> %s (substituted)"
+                         % (source_name, m.group("path"), sub_path))
+            i = j
+            continue
 
         pub = public_repo(url)
         if pub is None:

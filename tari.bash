@@ -278,14 +278,17 @@ done
 if [[ $PUBLIC -eq 1 ]]; then
     MANIFEST_DIR="$ROOT/public"
     [[ -d "$MANIFEST_DIR" ]] || die "--public needs $MANIFEST_DIR; generate it with tools/make_public_manifests.py"
-    # The site layer is per-cell configuration and a restricted loader. Both of
-    # its repositories are private with no public counterpart, so the layer is
-    # empty in public form: say so rather than importing nothing and reporting
-    # success.
+    # The site layer publicly is the worked EXAMPLE, not a real cell: a real
+    # site layer describes one physical installation and cannot be published.
+    # Say which one is being imported, because the difference matters the
+    # moment somebody points it at hardware.
     if [[ "${LAYER:-}" == "site" ]]; then
-        die "--layer site is not available publicly: it is entirely per-cell
-   configuration (tari_site) and a restricted loader (csf_loader), neither of
-   which is published. The highest public layer is hw."
+        note "The public site layer is site_example, a worked example -- not a"
+        note "real cell. Every installation-specific value in it is a nominal"
+        note "placeholder with an instruction for measuring the real one, and"
+        note "the arm kinematics are the manufacturer's defaults rather than"
+        note "your robot's. READ ITS README before pointing it at hardware."
+        note "csf_loader is not published and is absent from this layer."
     fi
     if [[ "${LAYER:-}" == "hw" ]]; then
         note "The public hw layer has no eddy-current instrument driver:"
