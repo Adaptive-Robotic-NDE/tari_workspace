@@ -1,0 +1,159 @@
+# Mirror a cleared branch to the public repository.
+#
+# Nobody pushes to the public repo by hand. The only way content gets there is
+# this workflow, and the only thing that starts it is a pull request into a
+# cleared_* branch being MERGED. So the approval on that pull request is the
+# clearance decision, and it is made by a person.
+#
+# ONE WORKFLOW FOR EVERY ROS DISTRO. GitHub Actions branch filters take globs,
+# so cleared_* covers cleared_iron, cleared_jazzy, cleared_humble and anything
+# added later with no new file and no edit here. Note that * does NOT match a
+# slash, which is why the cleared branches are named with underscores even in
+# the repositories whose working branch is tari/iron.
+#
+# The public branch name is the cleared branch with the prefix removed:
+#   cleared_iron -> iron      cleared_main -> main      cleared_jazzy -> jazzy
+#
+# THERE IS NO PER-REPOSITORY CONFIGURATION. The destination is derived from
+# this repository's own name by dropping the _staging suffix, so
+# Adaptive-Robotic-NDE/noether_staging publishes to
+# Adaptive-Robotic-NDE/noether. Set the repository or ORGANISATION variable
+# PUBLIC_REPO only to override that for a repository that breaks the naming
+# convention.
+#
+# The credential is PUBLISH_SSH_KEY, a repository secret holding the private
+# half of a deploy key whose public half has WRITE access on this repository's
+# own public mirror and on nothing else. That per-repository scope is the point:
+# if this secret leaks, it writes to one mirror, not to all of them. Deploy keys
+# also do not expire, so there is no date on which publishing starts failing
+# after the pull request has already merged.
+#
+# TWO CREDENTIALS, DELIBERATELY SPLIT. The destination check below uses the
+# workflow's own GITHUB_TOKEN, which can read public repository metadata and has
+# write access nowhere. The push uses the deploy key, which can write to exactly
+# one repository and cannot read the API. Neither can do the other's job.
+name: Push-To-Public
+on:
+  pull_request:
+    types: ['closed']
+    branches: ['cleared_*']
+jobs:
+  Push-To-Public:
+    # 'closed' fires for abandoned pull requests too. Only a merge publishes.
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the cleared branch
+        uses: actions/checkout@v4
+        with:
+          # The branch that was merged INTO, not the default branch.
+          ref: ${{ github.event.pull_request.base.ref }}
+          # Full history. actions/checkout defaults to depth 1, and a shallow
+          # clone cannot be pushed. Doing it here rather than with a later
+          # `git fetch --unshallow`, which FAILS on a repository that is not
+          # shallow and so breaks the moment the default changes.
+          fetch-depth: 0
+
+      - name: Push the cleared branch to the public repository
+        env:
+          PUBLISH_SSH_KEY: ${{ secrets.PUBLISH_SSH_KEY }}
+          GH_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLIC_REPO_OVERRIDE: ${{ vars.PUBLIC_REPO }}
+          THIS_REPO: ${{ github.repository }}
+          CLEARED_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+
+          # Derive the destination, unless overridden.
+          if [ -n "${PUBLIC_REPO_OVERRIDE:-}" ]; then
+            PUBLIC_REPO="$PUBLIC_REPO_OVERRIDE"
+          else
+            PUBLIC_REPO="${THIS_REPO%_staging}"
+            # If the suffix was not there, the derivation did nothing and we
+            # would be pushing this repository into itself. Refuse.
+            if [ "$PUBLIC_REPO" = "$THIS_REPO" ]; then
+              echo "::error::'$THIS_REPO' does not end in _staging, so the public repository cannot be derived. Set the PUBLIC_REPO variable."
+              exit 1
+            fi
+          fi
+          if [ -z "${PUBLISH_SSH_KEY:-}" ]; then
+            echo "::error::The secret PUBLISH_SSH_KEY is not set, so there is no credential to push with."
+            exit 1
+          fi
+
+          # THE DESTINATION NAME IS NOT PROOF OF THE DESTINATION.
+          #
+          # GitHub keeps a redirect from a repository's old name after a
+          # rename, so ORG/NAME can silently resolve to ORG/NAME_staging --
+          # the very repository this workflow is running in. That is not
+          # hypothetical: two repositories here were renamed to add the
+          # _staging suffix, and until their public counterparts were created,
+          # the derived URL resolved straight back to the private original. A
+          # push would have gone into the private repository and reported
+          # success while nothing was published at all.
+          #
+          # So ask the API what the name actually resolves to, and refuse
+          # unless it is (a) exactly what we asked for, not a redirect, and
+          # (b) public. Pushing cleared content into a private repository is
+          # not a disclosure, but believing you have published when you have
+          # not is its own kind of failure.
+          meta="$(curl -sS -H "Authorization: Bearer ${GH_API_TOKEN}" \
+                       -H "Accept: application/vnd.github+json" \
+                       "https://api.github.com/repos/${PUBLIC_REPO}")"
+          resolved="$(printf '%s' "$meta" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("full_name",""))')"
+          is_private="$(printf '%s' "$meta" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("private"))')"
+          if [ -z "$resolved" ]; then
+            echo "::error::$PUBLIC_REPO could not be read through the API. Does it exist?"
+            exit 1
+          fi
+          if [ "$(printf '%s' "$resolved" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$PUBLIC_REPO" | tr 'A-Z' 'a-z')" ]; then
+            echo "::error::$PUBLIC_REPO REDIRECTS to $resolved. That is a rename redirect, not the public mirror. Create the public repository under its own name, or set the PUBLIC_REPO variable."
+            exit 1
+          fi
+          if [ "$is_private" != "False" ]; then
+            echo "::error::$resolved is private. Refusing to publish into a repository that is not public."
+            exit 1
+          fi
+          echo "Destination verified: $resolved is public and is not a redirect."
+
+          # cleared_iron -> iron. Refuse anything else rather than guessing:
+          # the branch filter should make this unreachable, and if it is ever
+          # reached the safe outcome is to publish nothing.
+          target="${CLEARED_REF#cleared_}"
+          if [ "$target" = "$CLEARED_REF" ] || [ -z "$target" ]; then
+            echo "::error::Base ref '$CLEARED_REF' is not a cleared_* branch; refusing to publish."
+            exit 1
+          fi
+          echo "Publishing $CLEARED_REF to $PUBLIC_REPO as branch $target"
+
+          # The deploy key, written to a file the runner throws away with the
+          # job. Actions masks secret values in logs, and nothing here prints it.
+          mkdir --parents "$HOME/.ssh"
+          printf '%s\n' "$PUBLISH_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          ssh-keyscan -H github.com > "$HOME/.ssh/known_hosts" 2>/dev/null
+          # IdentitiesOnly, so a key the runner happens to have cannot be tried
+          # instead and silently push somewhere this one could not reach.
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/id_ed25519 -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o IdentitiesOnly=yes"
+
+          git config --global user.email "noreply@noreply"
+          git config --global user.name "AutoPush"
+          git remote add public "git@github.com:${PUBLIC_REPO}.git"
+
+          # --follow-tags, NOT --tags.
+          #
+          # `git push --tags` pushes every tag in the repository, and pushing a
+          # tag drags in whatever history its commit needs. A tag on a commit
+          # that is not in the cleared branch therefore publishes commits that
+          # were never cleared. This is not hypothetical: in
+          # moveit_task_constructor the tag ConnectingShared points at a commit
+          # reachable from NO branch, and `--tags` would have published it and
+          # four of its ancestors.
+          #
+          # --follow-tags pushes only ANNOTATED tags reachable from the commits
+          # being pushed, so a tag can never pull in anything the cleared
+          # branch does not already contain.
+          #
+          # No --force anywhere. A non-fast-forward push is refused, so this
+          # workflow can add to public history but never rewrite it.
+          git push --follow-tags public "HEAD:refs/heads/${target}"

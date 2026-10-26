@@ -1,0 +1,11 @@
+# Review gate for public release.
+#
+# A pull request into a cleared_* branch publishes its content to the public
+# mirror when it merges, so the approval on that pull request IS the clearance
+# decision. This file names who makes it.
+#
+# Paired with the organisation ruleset on cleared_* ("Require a pull request
+# before merging" plus "Require review from Code Owners"). Without that rule
+# this file only requests a review; it does not require one.
+
+*       @lgroo
